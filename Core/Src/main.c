@@ -18,11 +18,14 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "i2c.h"
 #include "tim.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "ssd1306.h"
+#include <stdio.h>
 
 /* USER CODE END Includes */
 
@@ -66,6 +69,8 @@ static ButtonDebouncer buttons[] =
   {PLAY_RESUME_GPIO_Port, PLAY_RESUME_Pin, BUTTON_RELEASED, 0U},
   {BACK_GPIO_Port, BACK_Pin, BUTTON_RELEASED, 0U},
 };
+static uint32_t led_toggle_count = 0U;
+static bool display_ready = false;
 
 /* USER CODE END PV */
 
@@ -73,7 +78,9 @@ static ButtonDebouncer buttons[] =
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 static void ButtonDebounce_Process(ButtonDebouncer *button, uint32_t now);
+static void ButtonDebounce_Init(void);
 static void ButtonPressed_Handler(void);
+static void Display_UpdateCounter(void);
 
 /* USER CODE END PFP */
 
@@ -111,8 +118,12 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_I2C2_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+  ButtonDebounce_Init();
+  display_ready = SSD1306_Init(&hi2c2);
+  Display_UpdateCounter();
 
   /* USER CODE END 2 */
 
@@ -173,6 +184,19 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+static void ButtonDebounce_Init(void)
+{
+  uint32_t now = HAL_GetTick();
+
+  for (uint32_t i = 0U; i < (sizeof(buttons) / sizeof(buttons[0])); i++)
+  {
+    buttons[i].state = (HAL_GPIO_ReadPin(buttons[i].port, buttons[i].pin) == GPIO_PIN_SET)
+                     ? BUTTON_PRESSED
+                     : BUTTON_RELEASED;
+    buttons[i].state_changed_at = now;
+  }
+}
+
 static void ButtonDebounce_Process(ButtonDebouncer *button, uint32_t now)
 {
   GPIO_PinState sample = HAL_GPIO_ReadPin(button->port, button->pin);
@@ -227,6 +251,27 @@ static void ButtonDebounce_Process(ButtonDebouncer *button, uint32_t now)
 static void ButtonPressed_Handler(void)
 {
   HAL_GPIO_TogglePin(LED_D2_GPIO_Port, LED_D2_Pin);
+  led_toggle_count++;
+  Display_UpdateCounter();
+}
+
+static void Display_UpdateCounter(void)
+{
+  char counter_text[16];
+
+  if (!display_ready)
+  {
+    return;
+  }
+
+  snprintf(counter_text, sizeof(counter_text), "%lu", led_toggle_count);
+
+  SSD1306_Fill(SSD1306_COLOR_BLACK);
+  SSD1306_GotoXY(0U, 0U);
+  SSD1306_Puts("LED toggles", &SSD1306_Font_7x10, SSD1306_COLOR_WHITE);
+  SSD1306_GotoXY(0U, 16U);
+  SSD1306_Puts(counter_text, &SSD1306_Font_7x10, SSD1306_COLOR_WHITE);
+  SSD1306_UpdateScreen();
 }
 
 /* USER CODE END 4 */
