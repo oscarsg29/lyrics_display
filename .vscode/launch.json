@@ -1,0 +1,25 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug STM32F103C8 ST-LINK",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/build/Debug/mcu_ioc.elf",
+            "request": "launch",
+            "type": "cortex-debug",
+            "servertype": "stlink",
+            "device": "STM32F103C8",
+            "interface": "swd",
+            "serialNumber": "53FF6D068370484822132367",
+            "runToEntryPoint": "main",
+            "preLaunchTask": "CMake: build",
+            "serverpath": "/opt/ST/STM32CubeCLT/STLink-gdb-server/bin/ST-LINK_gdbserver",
+            "stm32cubeprogrammer": "/opt/ST/STM32CubeCLT/STM32CubeProgrammer/bin",
+            "gdbPath": "/usr/local/bin/arm-none-eabi-gdb",
+            "showDevDebugOutput": "raw",
+            "serverArgs": [
+                "-s"
+            ]
+        }
+    ]
+}
