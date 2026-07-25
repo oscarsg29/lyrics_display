@@ -68,6 +68,8 @@ void Error_Handler(void);
 #define BACK_Pin GPIO_PIN_2
 #define BACK_GPIO_Port GPIOA
 #define BACK_EXTI_IRQn EXTI2_IRQn
+#define SD_CS_Pin GPIO_PIN_12
+#define SD_CS_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

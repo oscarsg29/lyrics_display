@@ -47,12 +47,16 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
     Core/SSD1306/ssd1306.c
     Core/SSD1306/ssd1306_fonts.c
+    Core/Src/sd_diskio.c
+    Middlewares/Third_Party/FatFs/src/ff.c
+    Middlewares/Third_Party/FatFs/src/option/ffunicode.c
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
     Core/SSD1306
+    Middlewares/Third_Party/FatFs/src
 )
 
 # Add project symbols (macros)
