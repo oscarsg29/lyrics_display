@@ -51,5 +51,10 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
+# STM32CubeMX / CMake local output
+build/
+mx.scratch/
+!.settings
+
 # debug information files
 *.dwo
