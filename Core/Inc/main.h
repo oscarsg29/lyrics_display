@@ -65,9 +65,9 @@ void Error_Handler(void);
 #define PLAY_RESUME_Pin GPIO_PIN_1
 #define PLAY_RESUME_GPIO_Port GPIOA
 #define PLAY_RESUME_EXTI_IRQn EXTI1_IRQn
-#define BACK_Pin GPIO_PIN_3
+#define BACK_Pin GPIO_PIN_2
 #define BACK_GPIO_Port GPIOA
-#define BACK_EXTI_IRQn EXTI3_IRQn
+#define BACK_EXTI_IRQn EXTI2_IRQn
 
 /* USER CODE BEGIN Private defines */
 
