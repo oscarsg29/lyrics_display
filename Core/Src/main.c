@@ -25,10 +25,14 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "ff.h"
 #include "sd_diskio.h"
 #include "ssd1306.h"
-#include "app_logic.h"
+#include "app_config.h"
+#include "app_lyrics.h"
+#include "app_text.h"
+#include "app_tracks.h"
+#include "button_input.h"
+#include "playback_led.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -38,56 +42,59 @@
 /* USER CODE BEGIN PTD */
 typedef enum
 {
-  BUTTON_RELEASED,
-  BUTTON_PRESS_DEBOUNCE,
-  BUTTON_PRESSED,
-  BUTTON_RELEASE_DEBOUNCE
-} ButtonDebounceState;
-
-typedef enum
-{
-  BUTTON_ACTION_NEXT,
-  BUTTON_ACTION_PLAY,
-  BUTTON_ACTION_BACK
-} ButtonAction;
-
-typedef struct
-{
-  GPIO_TypeDef *port;
-  uint16_t pin;
-  ButtonAction action;
-  ButtonDebounceState state;
-  uint32_t state_changed_at;
-} ButtonDebouncer;
-
-typedef enum
-{
   APP_MODE_BROWSER,
   APP_MODE_LYRICS
 } AppMode;
 
 typedef struct
 {
-  uint32_t timestamp_ms;
-  char text[48];
-} LyricLine;
+  uint8_t x;
+  uint8_t y;
+  uint8_t width;
+  uint8_t height;
+} DisplayRect;
+
+typedef struct
+{
+  uint8_t frame;
+  uint8_t style;
+} LyricEffectState;
 
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define BUTTON_DEBOUNCE_MS 20U
-#define MAX_TRACKS 32U
-#define TRACK_NAME_LENGTH 64U
-#define MAX_LYRIC_LINES 48U
 #define DISPLAY_CHARS_PER_LINE 18U
 #define DISPLAY_ROW_BUFFER_LENGTH 56U
+#define DISPLAY_MAX_ROWS 3U
+#define DISPLAY_BROWSER_HEADER_Y 0U
+#define DISPLAY_BROWSER_TRACK_LINE0_Y 11U
+#define DISPLAY_BROWSER_TRACK_LINE1_Y 21U
+#define DISPLAY_CENTER_ONE_LINE_Y 16U
+#define DISPLAY_CENTER_TWO_LINE0_Y 10U
+#define DISPLAY_CENTER_TWO_LINE1_Y 21U
+#define DISPLAY_CENTER_THREE_LINE0_Y 4U
+#define DISPLAY_CENTER_THREE_LINE1_Y 14U
+#define DISPLAY_CENTER_THREE_LINE2_Y 23U
+#define DISPLAY_LARGE_FONT_MARGIN_X 8U
+#define DISPLAY_SHAKE_PATTERN_MASK 7U
 #define LYRIC_ANIMATION_INTERVAL_MS 140U
 #define LYRIC_ANIMATION_COUNT 10U
 #define LYRIC_BACKGROUND_ANIMATION_COUNT 6U
 #define LYRIC_PARTICLE_COUNT 22U
-#define LED_PLAYING_STATE GPIO_PIN_RESET
-#define LED_STOPPED_STATE GPIO_PIN_SET
+#define LYRIC_PARTICLE_SPEED_X_SHIFT 8U
+#define LYRIC_PARTICLE_SPEED_Y_SHIFT 12U
+#define LYRIC_STYLE_TREMOR 1U
+#define LYRIC_STYLE_BURST 3U
+#define LYRIC_STYLE_STRIPE 4U
+#define LYRIC_STYLE_ZIGZAG 6U
+#define LYRIC_STYLE_DOTTED 7U
+#define LYRIC_STYLE_SHADOW 8U
+#define RANDOM_XORSHIFT_LEFT_A 13U
+#define RANDOM_XORSHIFT_RIGHT_B 17U
+#define RANDOM_XORSHIFT_LEFT_C 5U
+#define LYRIC_PARTICLE_SEED 0x9E3779B9U
+#define LYRIC_PARTICLE_STYLE_SEED 0x85EBCA6BU
 
 /* USER CODE END PD */
 
@@ -99,26 +106,20 @@ typedef struct
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-static ButtonDebouncer buttons[] =
-{
-  {NEXT_GPIO_Port, NEXT_Pin, BUTTON_ACTION_NEXT, BUTTON_RELEASED, 0U},
-  {PLAY_RESUME_GPIO_Port, PLAY_RESUME_Pin, BUTTON_ACTION_PLAY, BUTTON_RELEASED, 0U},
-  {BACK_GPIO_Port, BACK_Pin, BUTTON_ACTION_BACK, BUTTON_RELEASED, 0U},
-};
 static bool display_ready = false;
-static FRESULT sd_scan_result = FR_NOT_READY;
-static char track_names[MAX_TRACKS][TRACK_NAME_LENGTH];
+static AppTracksStatus track_scan_status = APP_TRACKS_STATUS_MOUNT_FAILED;
+static char track_names[APP_MAX_TRACKS][APP_TRACK_NAME_LENGTH];
 static uint32_t track_count = 0U;
 static uint32_t selected_track = 0U;
-static LyricLine lyric_lines[MAX_LYRIC_LINES];
-static uint32_t lyric_count = 0U;
+static AppLyricLine lyric_lines[APP_MAX_LYRIC_LINES];
+static AppLyricsDocument lyric_document = {
+  .lines = lyric_lines,
+  .max_lines = APP_MAX_LYRIC_LINES,
+  .count = 0U,
+};
 static uint32_t lyric_started_at = 0U;
 static int32_t current_lyric_index = -1;
 static AppMode app_mode = APP_MODE_BROWSER;
-static char lyric_artist[TRACK_NAME_LENGTH];
-static char lyric_title[TRACK_NAME_LENGTH];
-static uint32_t lyric_duration_ms = 0U;
-static bool lyric_led_on = false;
 static uint32_t lyric_last_animation_at = 0U;
 static uint8_t lyric_animation_frame = 0U;
 static uint8_t lyric_animation_style = 0U;
@@ -131,10 +132,8 @@ static bool display_rendering_lyric = false;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-static void ButtonDebounce_Process(ButtonDebouncer *button, uint32_t now);
-static void ButtonDebounce_Init(void);
-static void ButtonPressed_Handler(ButtonAction action);
-static FRESULT SD_LoadTrackList(void);
+static void ButtonPressed_Handler(ButtonInputAction action);
+static AppTracksStatus SD_LoadTrackList(void);
 static void Display_ShowSdScanning(void);
 static void Display_ShowTrackBrowser(void);
 static void Display_ShowMessage(const char *line0, const char *line1, const char *line2);
@@ -145,10 +144,7 @@ static void App_NextTrack(void);
 static void App_BackTrack(void);
 static void App_PlaySelectedTrack(void);
 static void Lyrics_Update(uint32_t now);
-static FRESULT Lyrics_LoadForSelectedTrack(void);
 static uint32_t Utf8_DecodeGlyph(const char **text);
-static size_t Utf8_GlyphLength(const char *text);
-static size_t Utf8_GlyphCount(const char *text);
 static void Display_DrawCodepoint(uint32_t codepoint, uint8_t x, uint8_t y, SSD1306_Font_t *font, SSD1306_COLOR_t color);
 static void Display_DrawInvertedExclamation(uint8_t x, uint8_t y, SSD1306_Font_t *font, SSD1306_COLOR_t foreground, SSD1306_COLOR_t background);
 static void Display_DrawInvertedQuestion(uint8_t x, uint8_t y, SSD1306_Font_t *font, SSD1306_COLOR_t foreground, SSD1306_COLOR_t background);
@@ -156,7 +152,7 @@ static void Display_DrawAccent(uint8_t x, uint8_t y, SSD1306_Font_t *font, char 
 static void Display_ShowLyricText(const char *text);
 static void Display_PrintWrappedText(const char *text);
 static void Display_PrintHighlightedSingleLine(const char *text);
-static void Display_DrawAnimatedHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame, uint8_t style);
+static void Display_DrawAnimatedHighlight(DisplayRect rect, LyricEffectState effect);
 static void Display_DrawLyricBackground(uint8_t frame, uint8_t style);
 static void Display_DrawLyricParticles(uint8_t frame, uint8_t style);
 static void Display_DrawSonarBackground(uint8_t frame, uint8_t style);
@@ -165,19 +161,19 @@ static void Display_DrawGradientBackground(uint8_t frame, uint8_t style);
 static void Display_DrawRainBackground(uint8_t frame, uint8_t style);
 static void Display_DrawWaveDotBackground(uint8_t frame, uint8_t style);
 static void Display_DrawLyricParticle(int16_t x, int16_t y, uint8_t radius);
-static void Display_DrawWaveHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame);
+static void Display_DrawWaveHighlight(DisplayRect rect, uint8_t frame);
 static void Display_DrawMultiLineAccent(uint8_t first_y, uint8_t last_y, uint8_t frame, uint8_t style);
-static void Display_DrawBurstHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame);
-static void Display_DrawWingHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame);
-static void Display_DrawStripeHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame);
-static void Display_DrawSparkHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame);
-static void Display_DrawDoubleFrameHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame);
-static void Display_DrawZigZagHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame);
-static void Display_DrawBandHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame);
-static void Display_DrawDottedHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame);
-static void Display_DrawShadowHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame);
+static void Display_DrawBurstHighlight(DisplayRect rect, uint8_t frame);
+static void Display_DrawWingHighlight(DisplayRect rect, uint8_t frame);
+static void Display_DrawStripeHighlight(DisplayRect rect, uint8_t frame);
+static void Display_DrawSparkHighlight(DisplayRect rect, uint8_t frame);
+static void Display_DrawDoubleFrameHighlight(DisplayRect rect, uint8_t frame);
+static void Display_DrawZigZagHighlight(DisplayRect rect, uint8_t frame);
+static void Display_DrawBandHighlight(DisplayRect rect, uint8_t frame);
+static void Display_DrawDottedHighlight(DisplayRect rect, uint8_t frame);
+static void Display_DrawShadowHighlight(DisplayRect rect, uint8_t frame);
+static uint32_t Random_Xorshift32(uint32_t seed);
 static uint8_t Lyric_SelectAnimation(void);
-static void App_SetPlaybackLed(bool is_playing);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -218,12 +214,12 @@ int main(void)
   MX_SPI2_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
-  App_SetPlaybackLed(false);
-  ButtonDebounce_Init();
+  PlaybackLed_Set(false);
+  ButtonInput_Init();
   SD_SPI_Setup();
   display_ready = SSD1306_Init(&hi2c2);
   Display_ShowSdScanning();
-  sd_scan_result = SD_LoadTrackList();
+  track_scan_status = SD_LoadTrackList();
   Display_ShowTrackBrowser();
 
   /* USER CODE END 2 */
@@ -237,10 +233,7 @@ int main(void)
     /* USER CODE BEGIN 3 */
     uint32_t now = HAL_GetTick();
 
-    for (uint32_t i = 0U; i < (sizeof(buttons) / sizeof(buttons[0])); i++)
-    {
-      ButtonDebounce_Process(&buttons[i], now);
-    }
+    ButtonInput_Process(now, ButtonPressed_Handler);
 
     Lyrics_Update(now);
   }
@@ -287,83 +280,19 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-static void ButtonDebounce_Init(void)
-{
-  uint32_t now = HAL_GetTick();
-
-  for (uint32_t i = 0U; i < (sizeof(buttons) / sizeof(buttons[0])); i++)
-  {
-    buttons[i].state = (HAL_GPIO_ReadPin(buttons[i].port, buttons[i].pin) == GPIO_PIN_SET)
-                     ? BUTTON_PRESSED
-                     : BUTTON_RELEASED;
-    buttons[i].state_changed_at = now;
-  }
-}
-
-static void ButtonDebounce_Process(ButtonDebouncer *button, uint32_t now)
-{
-  GPIO_PinState sample = HAL_GPIO_ReadPin(button->port, button->pin);
-
-  switch (button->state)
-  {
-    case BUTTON_RELEASED:
-      if (sample == GPIO_PIN_SET)
-      {
-        button->state = BUTTON_PRESS_DEBOUNCE;
-        button->state_changed_at = now;
-      }
-      break;
-
-    case BUTTON_PRESS_DEBOUNCE:
-      if (sample == GPIO_PIN_RESET)
-      {
-        button->state = BUTTON_RELEASED;
-      }
-      else if ((now - button->state_changed_at) >= BUTTON_DEBOUNCE_MS)
-      {
-        button->state = BUTTON_PRESSED;
-        ButtonPressed_Handler(button->action);
-      }
-      break;
-
-    case BUTTON_PRESSED:
-      if (sample == GPIO_PIN_RESET)
-      {
-        button->state = BUTTON_RELEASE_DEBOUNCE;
-        button->state_changed_at = now;
-      }
-      break;
-
-    case BUTTON_RELEASE_DEBOUNCE:
-      if (sample == GPIO_PIN_SET)
-      {
-        button->state = BUTTON_PRESSED;
-      }
-      else if ((now - button->state_changed_at) >= BUTTON_DEBOUNCE_MS)
-      {
-        button->state = BUTTON_RELEASED;
-      }
-      break;
-
-    default:
-      button->state = BUTTON_RELEASED;
-      break;
-  }
-}
-
-static void ButtonPressed_Handler(ButtonAction action)
+static void ButtonPressed_Handler(ButtonInputAction action)
 {
   switch (action)
   {
-    case BUTTON_ACTION_NEXT:
+    case BUTTON_INPUT_ACTION_NEXT:
       App_NextTrack();
       break;
 
-    case BUTTON_ACTION_PLAY:
+    case BUTTON_INPUT_ACTION_PLAY:
       App_PlaySelectedTrack();
       break;
 
-    case BUTTON_ACTION_BACK:
+    case BUTTON_INPUT_ACTION_BACK:
       App_BackTrack();
       break;
 
@@ -372,54 +301,16 @@ static void ButtonPressed_Handler(ButtonAction action)
   }
 }
 
-static FRESULT SD_LoadTrackList(void)
+static AppTracksStatus SD_LoadTrackList(void)
 {
-  static FATFS fs;
-  DIR dir;
-  FILINFO file_info;
-  FRESULT result;
-
   track_count = 0U;
   selected_track = 0U;
-  lyric_count = 0U;
+  AppLyrics_ClearDocument(&lyric_document);
   current_lyric_index = -2;
-  lyric_artist[0] = '\0';
-  lyric_title[0] = '\0';
-  lyric_duration_ms = 0U;
   app_mode = APP_MODE_BROWSER;
-  App_SetPlaybackLed(false);
+  PlaybackLed_Set(false);
 
-  result = f_mount(&fs, "", 1U);
-  if (result != FR_OK)
-  {
-    return result;
-  }
-
-  result = f_opendir(&dir, "");
-  if (result != FR_OK)
-  {
-    return result;
-  }
-
-  while (track_count < MAX_TRACKS)
-  {
-    result = f_readdir(&dir, &file_info);
-    if (result != FR_OK || file_info.fname[0] == '\0')
-    {
-      break;
-    }
-
-    if (((file_info.fattrib & AM_DIR) == 0U) && AppLogic_StringEndsWithIgnoreCase(file_info.fname, ".mp3"))
-    {
-      strncpy(track_names[track_count], file_info.fname, TRACK_NAME_LENGTH - 1U);
-      track_names[track_count][TRACK_NAME_LENGTH - 1U] = '\0';
-      track_count++;
-    }
-  }
-
-  f_closedir(&dir);
-  AppLogic_SortTrackNames(&track_names[0][0], track_count, TRACK_NAME_LENGTH);
-  return result;
+  return AppTracks_LoadFromRoot(&track_names[0][0], APP_MAX_TRACKS, APP_TRACK_NAME_LENGTH, &track_count);
 }
 
 static void Display_ShowSdScanning(void)
@@ -434,15 +325,32 @@ static void Display_ShowTrackBrowser(void)
   app_mode = APP_MODE_BROWSER;
   current_lyric_index = -2;
 
-  if (sd_scan_result != FR_OK)
+  if (track_scan_status != APP_TRACKS_STATUS_OK && track_scan_status != APP_TRACKS_STATUS_NO_TRACKS)
   {
     char diagnostic[DISPLAY_CHARS_PER_LINE + 1U];
     snprintf(diagnostic, sizeof(diagnostic), "SD:%u C:%u R:%02X", (unsigned int)SD_GetLastErrorStep(), (unsigned int)SD_GetLastCommand(), (unsigned int)SD_GetLastCommandResponse());
-    Display_ShowMessage("SD mount error", diagnostic, "");
+    switch (track_scan_status)
+    {
+      case APP_TRACKS_STATUS_INVALID_PARAMETER:
+        Display_ShowMessage("Track scan error", "Bad parameter", "");
+        break;
+      case APP_TRACKS_STATUS_MOUNT_FAILED:
+        Display_ShowMessage("SD mount error", diagnostic, "");
+        break;
+      case APP_TRACKS_STATUS_OPEN_DIR_FAILED:
+        Display_ShowMessage("SD dir error", diagnostic, "");
+        break;
+      case APP_TRACKS_STATUS_READ_DIR_FAILED:
+        Display_ShowMessage("SD read error", diagnostic, "");
+        break;
+      default:
+        Display_ShowMessage("Track scan error", diagnostic, "");
+        break;
+    }
     return;
   }
 
-  if (track_count == 0U)
+  if (track_scan_status == APP_TRACKS_STATUS_NO_TRACKS || track_count == 0U)
   {
     Display_ShowMessage("No MP3 files", "Root only", "");
     return;
@@ -456,18 +364,18 @@ static void Display_ShowTrackBrowser(void)
   }
 
   SSD1306_Fill(SSD1306_COLOR_BLACK);
-  Display_PrintLine(0U, header);
-  Display_PrintLine(11U, track_names[selected_track]);
+  Display_PrintLine(DISPLAY_BROWSER_HEADER_Y, header);
+  Display_PrintLine(DISPLAY_BROWSER_TRACK_LINE0_Y, track_names[selected_track]);
   if (strlen(track_names[selected_track]) > DISPLAY_CHARS_PER_LINE)
   {
-    Display_PrintLine(21U, &track_names[selected_track][DISPLAY_CHARS_PER_LINE]);
+    Display_PrintLine(DISPLAY_BROWSER_TRACK_LINE1_Y, &track_names[selected_track][DISPLAY_CHARS_PER_LINE]);
   }
   SSD1306_UpdateScreen();
 }
 
 static void Display_ShowMessage(const char *line0, const char *line1, const char *line2)
 {
-  char rows[3][DISPLAY_ROW_BUFFER_LENGTH] = {{0}};
+  char rows[DISPLAY_MAX_ROWS][DISPLAY_ROW_BUFFER_LENGTH] = {{0}};
 
   if (!display_ready)
   {
@@ -488,7 +396,7 @@ static void Display_ShowMessage(const char *line0, const char *line1, const char
   }
 
   SSD1306_Fill(SSD1306_COLOR_BLACK);
-  Display_PrintCenteredRows(rows, 3U);
+  Display_PrintCenteredRows(rows, DISPLAY_MAX_ROWS);
   SSD1306_UpdateScreen();
 }
 
@@ -512,7 +420,7 @@ static void Display_PrintLineOffset(uint8_t y, const char *text, int8_t offset_x
     text = "";
   }
 
-  visible_glyphs = Utf8_GlyphCount(text);
+  visible_glyphs = AppText_Utf8GlyphCount(text);
   if (visible_glyphs > DISPLAY_CHARS_PER_LINE)
   {
     visible_glyphs = DISPLAY_CHARS_PER_LINE;
@@ -555,7 +463,7 @@ static void Display_PrintLineOffset(uint8_t y, const char *text, int8_t offset_x
 
 static void App_NextTrack(void)
 {
-  if (sd_scan_result != FR_OK || track_count == 0U)
+  if (track_scan_status != APP_TRACKS_STATUS_OK || track_count == 0U)
   {
     Display_ShowTrackBrowser();
     return;
@@ -567,7 +475,7 @@ static void App_NextTrack(void)
 
 static void App_BackTrack(void)
 {
-  if (sd_scan_result != FR_OK || track_count == 0U)
+  if (track_scan_status != APP_TRACKS_STATUS_OK || track_count == 0U)
   {
     Display_ShowTrackBrowser();
     return;
@@ -579,40 +487,52 @@ static void App_BackTrack(void)
 
 static void App_PlaySelectedTrack(void)
 {
-  FRESULT result;
+  AppLyricsStatus result;
 
-  if (sd_scan_result != FR_OK || track_count == 0U)
+  if (track_scan_status != APP_TRACKS_STATUS_OK || track_count == 0U)
   {
     Display_ShowTrackBrowser();
     return;
   }
 
   Display_ShowMessage("Lyrics", "Loading...", "");
-  result = Lyrics_LoadForSelectedTrack();
-  if (result == FR_NO_FILE)
+  result = AppLyrics_LoadForTrack(track_names[selected_track], &lyric_document);
+  if (result == APP_LYRICS_STATUS_FILE_NOT_FOUND)
   {
     Display_ShowMessage("No LRC file", track_names[selected_track], "");
     return;
   }
-  if (result != FR_OK)
+  if (result == APP_LYRICS_STATUS_NO_TIMED_LINES)
   {
-    char error_line[DISPLAY_CHARS_PER_LINE + 1U];
-    snprintf(error_line, sizeof(error_line), "LRC error: %u", (unsigned int)result);
-    Display_ShowMessage(error_line, track_names[selected_track], "");
+    Display_ShowMessage(lyric_document.metadata.artist[0] != '\0' ? lyric_document.metadata.artist : "No lyric lines",
+                        lyric_document.metadata.title[0] != '\0' ? lyric_document.metadata.title : track_names[selected_track],
+                        lyric_document.metadata.artist[0] != '\0' || lyric_document.metadata.title[0] != '\0' ? "No timed lyrics" : "");
     return;
   }
-  if (lyric_count == 0U)
+  if (result != APP_LYRICS_STATUS_OK)
   {
-    Display_ShowMessage(lyric_artist[0] != '\0' ? lyric_artist : "No lyric lines",
-                        lyric_title[0] != '\0' ? lyric_title : track_names[selected_track],
-                        lyric_artist[0] != '\0' || lyric_title[0] != '\0' ? "No timed lyrics" : "");
+    switch (result)
+    {
+      case APP_LYRICS_STATUS_INVALID_PARAMETER:
+        Display_ShowMessage("LRC error", "Bad parameter", "");
+        break;
+      case APP_LYRICS_STATUS_OPEN_FAILED:
+        Display_ShowMessage("LRC open error", track_names[selected_track], "");
+        break;
+      case APP_LYRICS_STATUS_READ_FAILED:
+        Display_ShowMessage("LRC read error", track_names[selected_track], "");
+        break;
+      default:
+        Display_ShowMessage("LRC error", track_names[selected_track], "");
+        break;
+    }
     return;
   }
 
   lyric_started_at = HAL_GetTick();
   current_lyric_index = -2;
   app_mode = APP_MODE_LYRICS;
-  App_SetPlaybackLed(true);
+  PlaybackLed_Set(true);
   Lyrics_Update(lyric_started_at);
 }
 
@@ -622,13 +542,13 @@ static void Lyrics_Update(uint32_t now)
   int32_t next_index = -1;
   bool lyric_finished = false;
 
-  if (app_mode != APP_MODE_LYRICS || lyric_count == 0U)
+  if (app_mode != APP_MODE_LYRICS || lyric_document.count == 0U)
   {
     return;
   }
 
   elapsed_ms = now - lyric_started_at;
-  for (uint32_t i = 0U; i < lyric_count; i++)
+  for (uint32_t i = 0U; i < lyric_document.count; i++)
   {
     if (lyric_lines[i].timestamp_ms <= elapsed_ms)
     {
@@ -640,22 +560,22 @@ static void Lyrics_Update(uint32_t now)
     }
   }
 
-  if (lyric_duration_ms > 0U)
+  if (lyric_document.metadata.duration_ms > 0U)
   {
-    lyric_finished = elapsed_ms >= lyric_duration_ms;
+    lyric_finished = elapsed_ms >= lyric_document.metadata.duration_ms;
   }
-  else if (next_index == (int32_t)(lyric_count - 1U))
+  else if (next_index == (int32_t)(lyric_document.count - 1U))
   {
-    lyric_finished = elapsed_ms >= (lyric_lines[lyric_count - 1U].timestamp_ms + 3000U);
+    lyric_finished = elapsed_ms >= (lyric_lines[lyric_document.count - 1U].timestamp_ms + APP_LYRIC_END_GRACE_MS);
   }
 
   if (lyric_finished)
   {
-    App_SetPlaybackLed(false);
+    PlaybackLed_Set(false);
   }
   else
   {
-    App_SetPlaybackLed(true);
+    PlaybackLed_Set(true);
   }
 
   if (next_index == current_lyric_index)
@@ -680,77 +600,11 @@ static void Lyrics_Update(uint32_t now)
 
   if (next_index < 0)
   {
-    Display_ShowMessage(lyric_artist, lyric_title, "Waiting...");
+    Display_ShowMessage(lyric_document.metadata.artist, lyric_document.metadata.title, "Waiting...");
     return;
   }
 
   Display_ShowLyricText(lyric_lines[next_index].text);
-}
-
-static FRESULT Lyrics_LoadForSelectedTrack(void)
-{
-  FIL file;
-  FRESULT result;
-  UINT bytes_read;
-  char file_name[TRACK_NAME_LENGTH];
-  char line[96];
-  uint32_t line_length = 0U;
-  uint8_t byte;
-
-  lyric_count = 0U;
-  lyric_artist[0] = '\0';
-  lyric_title[0] = '\0';
-  lyric_duration_ms = 0U;
-  AppLogic_BuildLrcFileName(track_names[selected_track], file_name, sizeof(file_name));
-
-  result = f_open(&file, file_name, FA_READ);
-  if (result != FR_OK)
-  {
-    return result;
-  }
-
-  do
-  {
-    result = f_read(&file, &byte, 1U, &bytes_read);
-    if (result != FR_OK)
-    {
-      break;
-    }
-
-    if (bytes_read == 1U && byte != '\n')
-    {
-      if (byte != '\r' && line_length < (sizeof(line) - 1U))
-      {
-        line[line_length++] = (char)byte;
-      }
-      continue;
-    }
-
-    line[line_length] = '\0';
-    if (line_length > 0U)
-    {
-      uint32_t timestamp_ms;
-      const char *text;
-
-      if (AppLogic_ParseMetadataLine(line, lyric_artist, sizeof(lyric_artist), lyric_title, sizeof(lyric_title), &lyric_duration_ms))
-      {
-      }
-      else if (lyric_count < MAX_LYRIC_LINES && AppLogic_ParseLyricLine(line, &timestamp_ms, &text) && text[0] != '\0')
-      {
-        lyric_lines[lyric_count].timestamp_ms = timestamp_ms;
-        AppLogic_CopyDisplayText(lyric_lines[lyric_count].text, sizeof(lyric_lines[lyric_count].text), text);
-        if (lyric_lines[lyric_count].text[0] != '\0')
-        {
-          lyric_count++;
-        }
-      }
-    }
-
-    line_length = 0U;
-  } while (bytes_read == 1U && lyric_count < MAX_LYRIC_LINES);
-
-  f_close(&file);
-  return result;
 }
 
 static uint32_t Utf8_DecodeGlyph(const char **text)
@@ -773,36 +627,6 @@ static uint32_t Utf8_DecodeGlyph(const char **text)
 
   (*text)++;
   return '?';
-}
-
-static size_t Utf8_GlyphLength(const char *text)
-{
-  uint8_t byte = (uint8_t)text[0];
-
-  if (byte < 0x80U)
-  {
-    return 1U;
-  }
-
-  if ((byte & 0xE0U) == 0xC0U && text[1] != '\0')
-  {
-    return 2U;
-  }
-
-  return 1U;
-}
-
-static size_t Utf8_GlyphCount(const char *text)
-{
-  size_t count = 0U;
-
-  while (text != NULL && *text != '\0')
-  {
-    text += Utf8_GlyphLength(text);
-    count++;
-  }
-
-  return count;
 }
 
 static void Display_DrawCodepoint(uint32_t codepoint, uint8_t x, uint8_t y, SSD1306_Font_t *font, SSD1306_COLOR_t color)
@@ -982,13 +806,13 @@ static void Display_ShowLyricText(const char *text)
 
 static void Display_PrintWrappedText(const char *text)
 {
-  char rows[3][DISPLAY_ROW_BUFFER_LENGTH] = {{0}};
+  char rows[DISPLAY_MAX_ROWS][DISPLAY_ROW_BUFFER_LENGTH] = {{0}};
   uint32_t row = 0U;
   size_t row_bytes = 0U;
   size_t row_glyphs = 0U;
   const char *p = text;
 
-  while (*p != '\0' && row < 3U)
+  while (*p != '\0' && row < DISPLAY_MAX_ROWS)
   {
     char word[DISPLAY_ROW_BUFFER_LENGTH];
     size_t word_bytes = 0U;
@@ -1006,7 +830,7 @@ static void Display_PrintWrappedText(const char *text)
 
     while (*p != '\0' && *p != ' ' && word_glyphs < DISPLAY_CHARS_PER_LINE)
     {
-      size_t glyph_length = Utf8_GlyphLength(p);
+      size_t glyph_length = AppText_Utf8GlyphLength(p);
 
       if ((word_bytes + glyph_length) >= sizeof(word))
       {
@@ -1025,7 +849,7 @@ static void Display_PrintWrappedText(const char *text)
 
     while (*p != '\0' && *p != ' ')
     {
-      p += Utf8_GlyphLength(p);
+      p += AppText_Utf8GlyphLength(p);
     }
 
     if (word_glyphs == 0U)
@@ -1038,7 +862,7 @@ static void Display_PrintWrappedText(const char *text)
       strncpy(rows[row], word, DISPLAY_ROW_BUFFER_LENGTH - 1U);
       rows[row][DISPLAY_ROW_BUFFER_LENGTH - 1U] = '\0';
       row_bytes = strlen(rows[row]);
-      row_glyphs = Utf8_GlyphCount(rows[row]);
+      row_glyphs = AppText_Utf8GlyphCount(rows[row]);
     }
     else if ((row_glyphs + 1U + word_glyphs) <= DISPLAY_CHARS_PER_LINE)
     {
@@ -1048,7 +872,7 @@ static void Display_PrintWrappedText(const char *text)
         rows[row][row_bytes] = '\0';
         strncat(rows[row], word, DISPLAY_ROW_BUFFER_LENGTH - row_bytes - 1U);
         row_bytes = strlen(rows[row]);
-        row_glyphs = Utf8_GlyphCount(rows[row]);
+        row_glyphs = AppText_Utf8GlyphCount(rows[row]);
       }
     }
     else
@@ -1056,31 +880,31 @@ static void Display_PrintWrappedText(const char *text)
       row++;
       row_bytes = 0U;
       row_glyphs = 0U;
-      if (row < 3U)
+      if (row < DISPLAY_MAX_ROWS)
       {
         strncpy(rows[row], word, DISPLAY_ROW_BUFFER_LENGTH - 1U);
         rows[row][DISPLAY_ROW_BUFFER_LENGTH - 1U] = '\0';
         row_bytes = strlen(rows[row]);
-        row_glyphs = Utf8_GlyphCount(rows[row]);
+        row_glyphs = AppText_Utf8GlyphCount(rows[row]);
       }
     }
   }
 
-  Display_PrintCenteredRows(rows, 3U);
+  Display_PrintCenteredRows(rows, DISPLAY_MAX_ROWS);
 }
 
 static void Display_PrintCenteredRows(char rows[][DISPLAY_ROW_BUFFER_LENGTH], uint32_t row_count)
 {
-  char visible_rows[3][DISPLAY_ROW_BUFFER_LENGTH] = {{0}};
+  char visible_rows[DISPLAY_MAX_ROWS][DISPLAY_ROW_BUFFER_LENGTH] = {{0}};
   uint32_t visible_count = 0U;
   const uint8_t *y_positions;
-  static const uint8_t one_line_y[] = {16U};
-  static const uint8_t two_line_y[] = {10U, 21U};
-  static const uint8_t three_line_y[] = {4U, 14U, 23U};
+  static const uint8_t one_line_y[] = {DISPLAY_CENTER_ONE_LINE_Y};
+  static const uint8_t two_line_y[] = {DISPLAY_CENTER_TWO_LINE0_Y, DISPLAY_CENTER_TWO_LINE1_Y};
+  static const uint8_t three_line_y[] = {DISPLAY_CENTER_THREE_LINE0_Y, DISPLAY_CENTER_THREE_LINE1_Y, DISPLAY_CENTER_THREE_LINE2_Y};
 
   for (uint32_t i = 0U; i < row_count; i++)
   {
-    if (rows[i][0] != '\0' && visible_count < 3U)
+    if (rows[i][0] != '\0' && visible_count < DISPLAY_MAX_ROWS)
     {
       strncpy(visible_rows[visible_count], rows[i], DISPLAY_ROW_BUFFER_LENGTH - 1U);
       visible_count++;
@@ -1117,8 +941,8 @@ static void Display_PrintCenteredRows(char rows[][DISPLAY_ROW_BUFFER_LENGTH], ui
       static const int8_t shake_pattern_x[] = {0, 2, -1, 1, -2, 1, 0, -1};
       static const int8_t shake_pattern_y[] = {0, -1, 1, 0, -1, 1, 0, 1};
       uint8_t shake_seed = (uint8_t)(lyric_animation_frame + lyric_animation_style + (i * 5U));
-      int8_t shake_x = shake_pattern_x[shake_seed & 7U];
-      int8_t shake_y = shake_pattern_y[(shake_seed + (i * 3U)) & 7U];
+      int8_t shake_x = shake_pattern_x[shake_seed & DISPLAY_SHAKE_PATTERN_MASK];
+      int8_t shake_y = shake_pattern_y[(shake_seed + (i * DISPLAY_MAX_ROWS)) & DISPLAY_SHAKE_PATTERN_MASK];
 
       if (((shake_seed >> 1U) & 1U) != 0U)
       {
@@ -1141,7 +965,7 @@ static void Display_PrintCenteredRows(char rows[][DISPLAY_ROW_BUFFER_LENGTH], ui
 static void Display_PrintHighlightedSingleLine(const char *text)
 {
   SSD1306_Font_t *font;
-  size_t visible_glyphs = Utf8_GlyphCount(text);
+  size_t visible_glyphs = AppText_Utf8GlyphCount(text);
   uint16_t text_width;
   uint8_t text_x;
   uint8_t text_y;
@@ -1159,15 +983,17 @@ static void Display_PrintHighlightedSingleLine(const char *text)
   SSD1306_COLOR_t text_color;
   int8_t shake_x = 0;
   int8_t shake_y = 0;
+  DisplayRect highlight_rect;
+  LyricEffectState effect;
 
   if (visible_glyphs > DISPLAY_CHARS_PER_LINE)
   {
     visible_glyphs = DISPLAY_CHARS_PER_LINE;
   }
 
-  large_font_fits = (visible_glyphs * SSD1306_Font_11x18.FontWidth) <= (SSD1306_WIDTH - 8U);
-  force_small_font = (lyric_animation_style == 3U || lyric_animation_style == 6U || lyric_animation_style == 8U);
-  inverted_text = !(lyric_animation_style == 1U || lyric_animation_style == 4U || lyric_animation_style == 6U || lyric_animation_style == 8U);
+  large_font_fits = (visible_glyphs * SSD1306_Font_11x18.FontWidth) <= (SSD1306_WIDTH - DISPLAY_LARGE_FONT_MARGIN_X);
+  force_small_font = (lyric_animation_style == LYRIC_STYLE_BURST || lyric_animation_style == LYRIC_STYLE_ZIGZAG || lyric_animation_style == LYRIC_STYLE_SHADOW);
+  inverted_text = !(lyric_animation_style == LYRIC_STYLE_TREMOR || lyric_animation_style == LYRIC_STYLE_STRIPE || lyric_animation_style == LYRIC_STYLE_ZIGZAG || lyric_animation_style == LYRIC_STYLE_SHADOW);
   font = (large_font_fits && !force_small_font) ? &SSD1306_Font_11x18 : &SSD1306_Font_7x10;
   text_color = inverted_text ? SSD1306_COLOR_BLACK : SSD1306_COLOR_WHITE;
 
@@ -1180,11 +1006,11 @@ static void Display_PrintHighlightedSingleLine(const char *text)
   shape_w = (uint8_t)(text_width + (padding * 2U));
   shape_h = (uint8_t)(font->FontHeight + (padding * 2U) + 1U);
 
-  if (lyric_animation_style == 1U || lyric_animation_style == 4U || lyric_animation_style == 7U)
+  if (lyric_animation_style == LYRIC_STYLE_TREMOR || lyric_animation_style == LYRIC_STYLE_STRIPE || lyric_animation_style == LYRIC_STYLE_DOTTED)
   {
     static const int8_t shake_pattern_x[] = {0, 2, -1, 1, -2, 1, 0, -1};
     static const int8_t shake_pattern_y[] = {0, -1, 1, 0, -1, 1, 0, 1};
-    uint8_t shake_index = (uint8_t)(lyric_animation_frame & 7U);
+    uint8_t shake_index = (uint8_t)(lyric_animation_frame & DISPLAY_SHAKE_PATTERN_MASK);
 
     shake_x = shake_pattern_x[shake_index];
     shake_y = shake_pattern_y[shake_index];
@@ -1199,7 +1025,13 @@ static void Display_PrintHighlightedSingleLine(const char *text)
     shape_h = (uint8_t)(SSD1306_HEIGHT - shape_y - 1U);
   }
 
-  Display_DrawAnimatedHighlight(shape_x, shape_y, shape_w, shape_h, lyric_animation_frame, lyric_animation_style);
+  highlight_rect.x = shape_x;
+  highlight_rect.y = shape_y;
+  highlight_rect.width = shape_w;
+  highlight_rect.height = shape_h;
+  effect.frame = lyric_animation_frame;
+  effect.style = lyric_animation_style;
+  Display_DrawAnimatedHighlight(highlight_rect, effect);
 
   if ((int16_t)text_x + shake_x < 0)
   {
@@ -1238,8 +1070,12 @@ static void Display_PrintHighlightedSingleLine(const char *text)
   }
 }
 
-static void Display_DrawWaveHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame)
+static void Display_DrawWaveHighlight(DisplayRect rect, uint8_t frame)
 {
+  uint8_t x = rect.x;
+  uint8_t y = rect.y;
+  uint8_t w = rect.width;
+  uint8_t h = rect.height;
   uint8_t center = (uint8_t)(x + (w / 2U));
   uint8_t phase = (uint8_t)(frame & 3U);
 
@@ -1316,39 +1152,39 @@ static void Display_DrawMultiLineAccent(uint8_t first_y, uint8_t last_y, uint8_t
   }
 }
 
-static void Display_DrawAnimatedHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame, uint8_t style)
+static void Display_DrawAnimatedHighlight(DisplayRect rect, LyricEffectState effect)
 {
-  switch (style % LYRIC_ANIMATION_COUNT)
+  switch (effect.style % LYRIC_ANIMATION_COUNT)
   {
     case 0U:
-      Display_DrawWaveHighlight(x, y, w, h, frame);
+      Display_DrawWaveHighlight(rect, effect.frame);
       break;
     case 1U:
-      Display_DrawBurstHighlight(x, y, w, h, frame);
+      Display_DrawBurstHighlight(rect, effect.frame);
       break;
     case 2U:
-      Display_DrawWingHighlight(x, y, w, h, frame);
+      Display_DrawWingHighlight(rect, effect.frame);
       break;
     case 3U:
-      Display_DrawStripeHighlight(x, y, w, h, frame);
+      Display_DrawStripeHighlight(rect, effect.frame);
       break;
     case 4U:
-      Display_DrawSparkHighlight(x, y, w, h, frame);
+      Display_DrawSparkHighlight(rect, effect.frame);
       break;
     case 5U:
-      Display_DrawDoubleFrameHighlight(x, y, w, h, frame);
+      Display_DrawDoubleFrameHighlight(rect, effect.frame);
       break;
     case 6U:
-      Display_DrawZigZagHighlight(x, y, w, h, frame);
+      Display_DrawZigZagHighlight(rect, effect.frame);
       break;
     case 7U:
-      Display_DrawBandHighlight(x, y, w, h, frame);
+      Display_DrawBandHighlight(rect, effect.frame);
       break;
     case 8U:
-      Display_DrawDottedHighlight(x, y, w, h, frame);
+      Display_DrawDottedHighlight(rect, effect.frame);
       break;
     default:
-      Display_DrawShadowHighlight(x, y, w, h, frame);
+      Display_DrawShadowHighlight(rect, effect.frame);
       break;
   }
 }
@@ -1380,7 +1216,7 @@ static void Display_DrawLyricBackground(uint8_t frame, uint8_t style)
 
 static void Display_DrawLyricParticles(uint8_t frame, uint8_t style)
 {
-  uint32_t seed = 0x9E3779B9U ^ ((uint32_t)style * 0x85EBCA6BU);
+  uint32_t seed = LYRIC_PARTICLE_SEED ^ ((uint32_t)style * LYRIC_PARTICLE_STYLE_SEED);
 
   for (uint8_t i = 0U; i < LYRIC_PARTICLE_COUNT; i++)
   {
@@ -1393,18 +1229,14 @@ static void Display_DrawLyricParticles(uint8_t frame, uint8_t style)
     int16_t x;
     int16_t y;
 
-    seed ^= seed << 13;
-    seed ^= seed >> 17;
-    seed ^= seed << 5;
+    seed = Random_Xorshift32(seed);
     base_x = (uint8_t)(seed % SSD1306_WIDTH);
 
-    seed ^= seed << 13;
-    seed ^= seed >> 17;
-    seed ^= seed << 5;
+    seed = Random_Xorshift32(seed);
     base_y = (uint8_t)(seed % SSD1306_HEIGHT);
 
-    speed_x = (uint8_t)(1U + ((seed >> 8) & 3U));
-    speed_y = (uint8_t)(1U + ((seed >> 12) & 1U));
+    speed_x = (uint8_t)(1U + ((seed >> LYRIC_PARTICLE_SPEED_X_SHIFT) & 3U));
+    speed_y = (uint8_t)(1U + ((seed >> LYRIC_PARTICLE_SPEED_Y_SHIFT) & 1U));
     wobble = (uint8_t)(((frame + (i * 3U)) & 7U) < 4U ? (frame & 3U) : (3U - (frame & 3U)));
 
     x = (int16_t)((base_x + (frame * speed_x) + (i * 11U)) % SSD1306_WIDTH);
@@ -1576,8 +1408,12 @@ static void Display_DrawLyricParticle(int16_t x, int16_t y, uint8_t radius)
   }
 }
 
-static void Display_DrawBurstHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame)
+static void Display_DrawBurstHighlight(DisplayRect rect, uint8_t frame)
 {
+  uint8_t x = rect.x;
+  uint8_t y = rect.y;
+  uint8_t w = rect.width;
+  uint8_t h = rect.height;
   uint8_t center_x = (uint8_t)(x + (w / 2U));
   uint8_t center_y = (uint8_t)(y + (h / 2U));
   uint8_t reach = (uint8_t)(2U + (frame & 3U));
@@ -1593,8 +1429,12 @@ static void Display_DrawBurstHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t 
   SSD1306_DrawPixel((uint16_t)(center_x + reach), (uint16_t)(center_y + reach), SSD1306_COLOR_WHITE);
 }
 
-static void Display_DrawWingHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame)
+static void Display_DrawWingHighlight(DisplayRect rect, uint8_t frame)
 {
+  uint8_t x = rect.x;
+  uint8_t y = rect.y;
+  uint8_t w = rect.width;
+  uint8_t h = rect.height;
   uint8_t wing = (uint8_t)(3U + ((frame & 3U) * 2U));
   uint8_t mid_y = (uint8_t)(y + (h / 2U));
 
@@ -1605,8 +1445,13 @@ static void Display_DrawWingHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h
   SSD1306_DrawLine((uint16_t)(x + w), (uint16_t)(y + h), (uint16_t)(x + w + wing), mid_y, SSD1306_COLOR_WHITE);
 }
 
-static void Display_DrawStripeHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame)
+static void Display_DrawStripeHighlight(DisplayRect rect, uint8_t frame)
 {
+  uint8_t x = rect.x;
+  uint8_t y = rect.y;
+  uint8_t w = rect.width;
+  uint8_t h = rect.height;
+
   SSD1306_DrawFilledRectangle(x, y, w, h, SSD1306_COLOR_WHITE);
   for (uint8_t col = (uint8_t)(frame & 3U); col <= w; col = (uint8_t)(col + 4U))
   {
@@ -1618,8 +1463,12 @@ static void Display_DrawStripeHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t
   }
 }
 
-static void Display_DrawSparkHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame)
+static void Display_DrawSparkHighlight(DisplayRect rect, uint8_t frame)
 {
+  uint8_t x = rect.x;
+  uint8_t y = rect.y;
+  uint8_t w = rect.width;
+  uint8_t h = rect.height;
   uint8_t sparkle = (uint8_t)(2U + (frame & 3U));
 
   SSD1306_DrawRectangle(x, y, w, h, SSD1306_COLOR_WHITE);
@@ -1633,8 +1482,12 @@ static void Display_DrawSparkHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t 
   SSD1306_DrawPixel((uint16_t)(x + w + sparkle), (uint16_t)(y + (h / 2U)), SSD1306_COLOR_WHITE);
 }
 
-static void Display_DrawDoubleFrameHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame)
+static void Display_DrawDoubleFrameHighlight(DisplayRect rect, uint8_t frame)
 {
+  uint8_t x = rect.x;
+  uint8_t y = rect.y;
+  uint8_t w = rect.width;
+  uint8_t h = rect.height;
   uint8_t inset = (uint8_t)(1U + (frame & 1U));
 
   SSD1306_DrawFilledRectangle(x, y, w, h, SSD1306_COLOR_WHITE);
@@ -1645,8 +1498,13 @@ static void Display_DrawDoubleFrameHighlight(uint8_t x, uint8_t y, uint8_t w, ui
   }
 }
 
-static void Display_DrawZigZagHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame)
+static void Display_DrawZigZagHighlight(DisplayRect rect, uint8_t frame)
 {
+  uint8_t x = rect.x;
+  uint8_t y = rect.y;
+  uint8_t w = rect.width;
+  uint8_t h = rect.height;
+
   for (uint8_t col = 0U; col <= w; col++)
   {
     uint8_t px = (uint8_t)(x + col);
@@ -1659,8 +1517,12 @@ static void Display_DrawZigZagHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t
   }
 }
 
-static void Display_DrawBandHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame)
+static void Display_DrawBandHighlight(DisplayRect rect, uint8_t frame)
 {
+  uint8_t x = rect.x;
+  uint8_t y = rect.y;
+  uint8_t w = rect.width;
+  uint8_t h = rect.height;
   uint8_t band = (uint8_t)(2U + (frame % 5U));
 
   SSD1306_DrawFilledRectangle(x, y, w, h, SSD1306_COLOR_WHITE);
@@ -1671,8 +1533,13 @@ static void Display_DrawBandHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h
   }
 }
 
-static void Display_DrawDottedHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame)
+static void Display_DrawDottedHighlight(DisplayRect rect, uint8_t frame)
 {
+  uint8_t x = rect.x;
+  uint8_t y = rect.y;
+  uint8_t w = rect.width;
+  uint8_t h = rect.height;
+
   for (uint8_t col = (uint8_t)(frame & 1U); col <= w; col = (uint8_t)(col + 3U))
   {
     SSD1306_DrawPixel((uint16_t)(x + col), y, SSD1306_COLOR_WHITE);
@@ -1685,8 +1552,12 @@ static void Display_DrawDottedHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t
   }
 }
 
-static void Display_DrawShadowHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame)
+static void Display_DrawShadowHighlight(DisplayRect rect, uint8_t frame)
 {
+  uint8_t x = rect.x;
+  uint8_t y = rect.y;
+  uint8_t w = rect.width;
+  uint8_t h = rect.height;
   uint8_t shadow = (uint8_t)(1U + (frame & 1U));
 
   if ((x + w + shadow) < SSD1306_WIDTH && (y + h + shadow) < SSD1306_HEIGHT)
@@ -1698,13 +1569,20 @@ static void Display_DrawShadowHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t
   SSD1306_DrawLine(x, y, x, (uint16_t)(y + h), SSD1306_COLOR_BLACK);
 }
 
+static uint32_t Random_Xorshift32(uint32_t seed)
+{
+  seed ^= seed << RANDOM_XORSHIFT_LEFT_A;
+  seed ^= seed >> RANDOM_XORSHIFT_RIGHT_B;
+  seed ^= seed << RANDOM_XORSHIFT_LEFT_C;
+
+  return seed;
+}
+
 static uint8_t Lyric_SelectAnimation(void)
 {
   uint8_t previous = lyric_animation_style;
 
-  lyric_animation_rng ^= lyric_animation_rng << 13;
-  lyric_animation_rng ^= lyric_animation_rng >> 17;
-  lyric_animation_rng ^= lyric_animation_rng << 5;
+  lyric_animation_rng = Random_Xorshift32(lyric_animation_rng);
   lyric_animation_rng ^= HAL_GetTick();
 
   lyric_animation_style = (uint8_t)(lyric_animation_rng % LYRIC_ANIMATION_COUNT);
@@ -1714,17 +1592,6 @@ static uint8_t Lyric_SelectAnimation(void)
   }
 
   return lyric_animation_style;
-}
-
-static void App_SetPlaybackLed(bool is_playing)
-{
-  if (lyric_led_on == is_playing)
-  {
-    return;
-  }
-
-  lyric_led_on = is_playing;
-  HAL_GPIO_WritePin(LED_D2_GPIO_Port, LED_D2_Pin, is_playing ? LED_PLAYING_STATE : LED_STOPPED_STATE);
 }
 
 /* USER CODE END 4 */

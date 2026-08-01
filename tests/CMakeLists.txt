@@ -10,6 +10,7 @@ enable_testing()
 
 add_library(app_logic_under_test
     ../Core/App/app_logic.c
+    ../Core/App/app_text.c
 )
 
 target_include_directories(app_logic_under_test PUBLIC

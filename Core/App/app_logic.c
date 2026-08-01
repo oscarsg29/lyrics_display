@@ -1,10 +1,20 @@
 #include "app_logic.h"
 
+#include "app_text.h"
+
 #include <string.h>
 
-static bool SkipInlineTimestampTag(const char **cursor);
-static bool ParseTimestampTag(const char **cursor, uint32_t *timestamp_ms);
-static size_t Utf8_GlyphLength(const char *text);
+#define ASCII_DOUBLE_QUOTE '"'
+#define ASCII_SPACE ' '
+#define ASCII_METADATA_OPEN '['
+#define ASCII_METADATA_CLOSE ']'
+#define ASCII_TIME_SEPARATOR ':'
+#define ASCII_NUL '\0'
+#define SECONDS_PER_MINUTE 60U
+#define MILLISECONDS_PER_SECOND 1000U
+#define UTF8_ASCII_LIMIT 0x80U
+#define UTF8_LATIN1_PREFIX_0 0xC2U
+#define UTF8_LATIN1_PREFIX_1 0xC3U
 
 bool AppLogic_StringEndsWithIgnoreCase(const char *text, const char *suffix)
 {
@@ -61,25 +71,20 @@ void AppLogic_BuildLrcFileName(const char *mp3_name, char *lrc_name, size_t lrc_
     mp3_name = "";
   }
 
-  strncpy(lrc_name, mp3_name, lrc_name_size - 1U);
-  lrc_name[lrc_name_size - 1U] = '\0';
+  AppText_CopyTruncated(lrc_name, lrc_name_size, mp3_name);
 
   length = strlen(lrc_name);
-  if (length >= 4U && AppLogic_StringEndsWithIgnoreCase(lrc_name, ".mp3"))
+  if (length >= strlen(APP_MP3_EXTENSION) && AppLogic_StringEndsWithIgnoreCase(lrc_name, APP_MP3_EXTENSION))
   {
-    lrc_name[length - 4U] = '\0';
+    lrc_name[length - strlen(APP_MP3_EXTENSION)] = ASCII_NUL;
   }
 
-  strncat(lrc_name, ".lrc", lrc_name_size - strlen(lrc_name) - 1U);
+  strncat(lrc_name, APP_LRC_EXTENSION, lrc_name_size - strlen(lrc_name) - 1U);
 }
 
 bool AppLogic_ParseLyricLine(const char *line, uint32_t *timestamp_ms, const char **text)
 {
   uint32_t ignored_timestamp;
-  uint32_t minutes = 0U;
-  uint32_t seconds = 0U;
-  uint32_t fraction = 0U;
-  uint32_t fraction_digits = 0U;
   const char *p = line;
 
   if (p == NULL || timestamp_ms == NULL || text == NULL)
@@ -87,75 +92,31 @@ bool AppLogic_ParseLyricLine(const char *line, uint32_t *timestamp_ms, const cha
     return false;
   }
 
-  if ((uint8_t)p[0] == 0xEFU && (uint8_t)p[1] == 0xBBU && (uint8_t)p[2] == 0xBFU)
+  if (AppText_HasUtf8Bom(p))
   {
     p += 3;
   }
 
-  if (*p == '"')
+  if (*p == ASCII_DOUBLE_QUOTE)
   {
     p++;
   }
 
-  if (*p != '[')
+  if (!AppText_ParseTimestampTag(&p, timestamp_ms))
   {
     return false;
   }
 
-  p++;
-  while (*p >= '0' && *p <= '9')
-  {
-    minutes = (minutes * 10U) + (uint32_t)(*p - '0');
-    p++;
-  }
-
-  if (*p != ':')
-  {
-    return false;
-  }
-  p++;
-
-  while (*p >= '0' && *p <= '9')
-  {
-    seconds = (seconds * 10U) + (uint32_t)(*p - '0');
-    p++;
-  }
-
-  if (*p == '.')
-  {
-    p++;
-    while (*p >= '0' && *p <= '9' && fraction_digits < 3U)
-    {
-      fraction = (fraction * 10U) + (uint32_t)(*p - '0');
-      fraction_digits++;
-      p++;
-    }
-  }
-
-  if (*p != ']')
-  {
-    return false;
-  }
-  p++;
-
-  while (fraction_digits < 3U)
-  {
-    fraction *= 10U;
-    fraction_digits++;
-  }
-
-  *timestamp_ms = ((minutes * 60U) + seconds) * 1000U + fraction;
-
-  while (ParseTimestampTag(&p, &ignored_timestamp))
+  while (AppText_ParseTimestampTag(&p, &ignored_timestamp))
   {
   }
 
-  while (*p == ' ')
+  while (*p == ASCII_SPACE)
   {
     p++;
   }
 
-  if (*p == '"' && p[1] == '\0')
+  if (*p == ASCII_DOUBLE_QUOTE && p[1] == ASCII_NUL)
   {
     p++;
   }
@@ -175,40 +136,40 @@ bool AppLogic_ParseDuration(const char *value, uint32_t *duration_ms)
     return false;
   }
 
-  while (*p >= '0' && *p <= '9')
-  {
-    minutes = (minutes * 10U) + (uint32_t)(*p - '0');
-    p++;
-  }
-
-  if (*p != ':')
+  if (!AppText_ParseUnsigned(&p, &minutes) || *p != ASCII_TIME_SEPARATOR)
   {
     return false;
   }
   p++;
 
-  while (*p >= '0' && *p <= '9')
+  if (!AppText_ParseUnsigned(&p, &seconds))
   {
-    seconds = (seconds * 10U) + (uint32_t)(*p - '0');
-    p++;
+    return false;
   }
 
-  *duration_ms = ((minutes * 60U) + seconds) * 1000U;
+  *duration_ms = ((minutes * SECONDS_PER_MINUTE) + seconds) * MILLISECONDS_PER_SECOND;
   return true;
 }
 
-bool AppLogic_ParseMetadataLine(const char *line,
-                                char *artist,
-                                size_t artist_size,
-                                char *title,
-                                size_t title_size,
-                                uint32_t *duration_ms)
+void AppLogic_ClearMetadata(AppLyricMetadata *metadata)
+{
+  if (metadata == NULL)
+  {
+    return;
+  }
+
+  metadata->artist[0] = ASCII_NUL;
+  metadata->title[0] = ASCII_NUL;
+  metadata->duration_ms = 0U;
+}
+
+bool AppLogic_ParseMetadataLine(const char *line, AppLyricMetadata *metadata)
 {
   const char *p = line;
   const char *value;
   char *target = NULL;
   size_t target_size = 0U;
-  char metadata_text[64];
+  char metadata_text[APP_METADATA_TEXT_LENGTH];
   size_t metadata_length = 0U;
   bool is_length = false;
 
@@ -217,37 +178,37 @@ bool AppLogic_ParseMetadataLine(const char *line,
     return false;
   }
 
-  if ((uint8_t)p[0] == 0xEFU && (uint8_t)p[1] == 0xBBU && (uint8_t)p[2] == 0xBFU)
+  if (AppText_HasUtf8Bom(p))
   {
     p += 3;
   }
 
-  if (*p == '"')
+  if (*p == ASCII_DOUBLE_QUOTE)
   {
     p++;
   }
 
-  if (p[0] != '[')
+  if (p[0] != ASCII_METADATA_OPEN)
   {
     return false;
   }
 
-  if (p[1] >= '0' && p[1] <= '9')
+  if (AppText_IsAsciiDigit(p[1]))
   {
     return false;
   }
 
-  if (p[1] == 'a' && p[2] == 'r' && p[3] == ':')
+  if (strncmp(p, "[ar:", 4U) == 0)
   {
-    target = artist;
-    target_size = artist_size;
+    target = metadata != NULL ? metadata->artist : NULL;
+    target_size = metadata != NULL ? sizeof(metadata->artist) : 0U;
   }
-  else if (p[1] == 't' && p[2] == 'i' && p[3] == ':')
+  else if (strncmp(p, "[ti:", 4U) == 0)
   {
-    target = title;
-    target_size = title_size;
+    target = metadata != NULL ? metadata->title : NULL;
+    target_size = metadata != NULL ? sizeof(metadata->title) : 0U;
   }
-  else if (strncmp(&p[1], "length", 6U) == 0 && p[7] == ':')
+  else if (strncmp(p, "[length:", 8U) == 0)
   {
     is_length = true;
     value = &p[8];
@@ -261,21 +222,24 @@ bool AppLogic_ParseMetadataLine(const char *line,
   {
     value = &p[4];
   }
-  while (*value == ' ')
+  while (*value == ASCII_SPACE)
   {
     value++;
   }
 
-  while (value[metadata_length] != '\0' && value[metadata_length] != ']' && metadata_length < (sizeof(metadata_text) - 1U))
+  while (value[metadata_length] != ASCII_NUL && value[metadata_length] != ASCII_METADATA_CLOSE && metadata_length < (sizeof(metadata_text) - 1U))
   {
     metadata_text[metadata_length] = value[metadata_length];
     metadata_length++;
   }
-  metadata_text[metadata_length] = '\0';
+  metadata_text[metadata_length] = ASCII_NUL;
 
   if (is_length)
   {
-    (void)AppLogic_ParseDuration(metadata_text, duration_ms);
+    if (metadata != NULL)
+    {
+      (void)AppLogic_ParseDuration(metadata_text, &metadata->duration_ms);
+    }
   }
   else
   {
@@ -304,19 +268,19 @@ void AppLogic_CopyDisplayText(char *destination, size_t destination_size, const 
     uint8_t byte = (uint8_t)*source;
     size_t glyph_length;
 
-    if (SkipInlineTimestampTag(&source))
+    if (AppText_SkipInlineTimestampTag(&source))
     {
       continue;
     }
 
-    if (byte < 0x80U)
+    if (byte < UTF8_ASCII_LIMIT)
     {
       destination[write_index++] = (char)byte;
       source++;
     }
-    else if ((byte == 0xC2U || byte == 0xC3U) && source[1] != '\0')
+    else if ((byte == UTF8_LATIN1_PREFIX_0 || byte == UTF8_LATIN1_PREFIX_1) && source[1] != ASCII_NUL)
     {
-      glyph_length = Utf8_GlyphLength(source);
+      glyph_length = AppText_Utf8GlyphLength(source);
       if ((write_index + glyph_length) >= destination_size)
       {
         break;
@@ -339,7 +303,7 @@ void AppLogic_CopyDisplayText(char *destination, size_t destination_size, const 
 
 void AppLogic_SortTrackNames(char *track_names, uint32_t track_count, size_t track_name_length)
 {
-  char temp[64];
+  char temp[APP_TRACK_NAME_LENGTH];
 
   if (track_names == NULL || track_name_length == 0U || track_name_length > sizeof(temp))
   {
@@ -355,156 +319,10 @@ void AppLogic_SortTrackNames(char *track_names, uint32_t track_count, size_t tra
 
       if (strcmp(left, right) > 0)
       {
-        strncpy(temp, left, sizeof(temp));
-        strncpy(left, right, track_name_length);
-        strncpy(right, temp, track_name_length);
+        AppText_CopyTruncated(temp, sizeof(temp), left);
+        AppText_CopyTruncated(left, track_name_length, right);
+        AppText_CopyTruncated(right, track_name_length, temp);
       }
     }
   }
-}
-
-static bool SkipInlineTimestampTag(const char **cursor)
-{
-  const char *p = *cursor;
-
-  if (p == NULL || *p != '<')
-  {
-    return false;
-  }
-
-  p++;
-  if (*p < '0' || *p > '9')
-  {
-    return false;
-  }
-
-  while (*p >= '0' && *p <= '9')
-  {
-    p++;
-  }
-
-  if (*p != ':')
-  {
-    return false;
-  }
-  p++;
-
-  if (*p < '0' || *p > '9')
-  {
-    return false;
-  }
-
-  while (*p >= '0' && *p <= '9')
-  {
-    p++;
-  }
-
-  if (*p == '.')
-  {
-    p++;
-    while (*p >= '0' && *p <= '9')
-    {
-      p++;
-    }
-  }
-
-  if (*p != '>')
-  {
-    return false;
-  }
-
-  *cursor = p + 1;
-  return true;
-}
-
-static bool ParseTimestampTag(const char **cursor, uint32_t *timestamp_ms)
-{
-  uint32_t minutes = 0U;
-  uint32_t seconds = 0U;
-  uint32_t fraction = 0U;
-  uint32_t fraction_digits = 0U;
-  const char *p = *cursor;
-
-  if (p == NULL || *p != '[' || timestamp_ms == NULL)
-  {
-    return false;
-  }
-
-  p++;
-  if (*p < '0' || *p > '9')
-  {
-    return false;
-  }
-
-  while (*p >= '0' && *p <= '9')
-  {
-    minutes = (minutes * 10U) + (uint32_t)(*p - '0');
-    p++;
-  }
-
-  if (*p != ':')
-  {
-    return false;
-  }
-  p++;
-
-  if (*p < '0' || *p > '9')
-  {
-    return false;
-  }
-
-  while (*p >= '0' && *p <= '9')
-  {
-    seconds = (seconds * 10U) + (uint32_t)(*p - '0');
-    p++;
-  }
-
-  if (*p == '.')
-  {
-    p++;
-    while (*p >= '0' && *p <= '9' && fraction_digits < 3U)
-    {
-      fraction = (fraction * 10U) + (uint32_t)(*p - '0');
-      fraction_digits++;
-      p++;
-    }
-
-    while (*p >= '0' && *p <= '9')
-    {
-      p++;
-    }
-  }
-
-  if (*p != ']')
-  {
-    return false;
-  }
-  p++;
-
-  while (fraction_digits < 3U)
-  {
-    fraction *= 10U;
-    fraction_digits++;
-  }
-
-  *timestamp_ms = ((minutes * 60U) + seconds) * 1000U + fraction;
-  *cursor = p;
-  return true;
-}
-
-static size_t Utf8_GlyphLength(const char *text)
-{
-  uint8_t byte = (uint8_t)text[0];
-
-  if (byte < 0x80U)
-  {
-    return 1U;
-  }
-
-  if ((byte & 0xE0U) == 0xC0U && text[1] != '\0')
-  {
-    return 2U;
-  }
-
-  return 1U;
 }

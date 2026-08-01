@@ -79,7 +79,7 @@ flowchart TD
     Scan["Display scanning message<br/>SD_LoadTrackList"]
     Browser["Display_ShowTrackBrowser"]
     Loop["while (1)"]
-    Buttons["ButtonDebounce_Process<br/>NEXT / PLAY / BACK"]
+    Buttons["ButtonInput_Process<br/>NEXT / PLAY / BACK"]
     Lyrics["Lyrics_Update"]
 
     Reset --> HALInit --> Clock --> Peripherals --> AppInit --> Scan --> Browser --> Loop
@@ -101,9 +101,9 @@ stateDiagram-v2
     Browser --> Browser: no SD / no files / load error message
 ```
 
-Buttons are currently polled and debounced in `main.c`. `Core/Inc/main.h`
-defines EXTI IRQ names for the button pins, but `Core/Src/gpio.c` configures
-`NEXT`, `PLAY_RESUME`, and `BACK` as pulldown inputs, not active EXTI sources.
+Buttons are currently polled and debounced by `Core/Input/button_input.c`.
+`Core/Src/gpio.c` configures `NEXT`, `PLAY_RESUME`, and `BACK` as pulldown
+`GPIO_MODE_INPUT` pins, not active EXTI sources.
 
 ## Peripheral Wiring Model
 
@@ -264,6 +264,111 @@ Other useful principles for this project:
   errors, and render useful display messages when hardware or files are missing.
 - Keep generated-code boundaries intact: place custom code in `USER CODE`
   sections or separate modules so CubeMX regeneration is manageable.
+- File size and cohesion: keep files small enough to review. A source file
+  should normally represent one module or one closely related responsibility.
+  Split files when they mix hardware access, app state transitions, parsing,
+  storage, rendering, animation, and input handling.
+
+## File Size And Modularity
+
+- Use 300-500 lines as a soft target for application `.c` files. Exceeding this
+  is acceptable when the file is highly cohesive, such as a font table, display
+  primitive driver, generated code, or vendor middleware.
+- Do not split CubeMX-generated or vendor files just to satisfy line counts.
+- If a file grows past the soft target, identify natural module boundaries
+  before adding more code.
+- Good module boundaries for this firmware include:
+  input/buttons, playback LED, track scanning, track browser state, LRC loading,
+  lyric timing, pure app logic, display layout, display effects, SD/FatFs
+  adapter, and SSD1306 primitives.
+- Prefer small headers that expose only the functions and types needed by other
+  modules.
+- Avoid making a "common" module for unrelated helpers. Group code by reason to
+  change, not by generic utility labels.
+- Keep `main.c` focused on startup, peripheral initialization, and top-level
+  orchestration.
+
+## Error Handling Design
+
+Use multi-layer error handling. Do not create one global error enum just because
+different failures are all "errors"; keep error types local to the layer that
+understands and can act on them.
+
+```mermaid
+flowchart TD
+    HAL["HAL / CubeMX init<br/>HAL_StatusTypeDef<br/>Error_Handler for unrecoverable init"]
+    Disk["SD block driver<br/>DSTATUS / DRESULT<br/>SD diagnostic getters"]
+    FatFs["FatFs storage API<br/>FRESULT"]
+    Tracks["Track scanning module<br/>track-specific status"]
+    Lyrics["Lyrics loading module<br/>lyrics-specific status"]
+    Logic["Pure app logic<br/>bool or parse-specific result"]
+    App["Top-level app orchestration<br/>decides retry, stop, or show message"]
+    UI["Display/UI layer<br/>renders user-facing messages"]
+
+    HAL --> App
+    Disk --> FatFs
+    FatFs --> Tracks
+    FatFs --> Lyrics
+    Logic --> Tracks
+    Logic --> Lyrics
+    Tracks --> App
+    Lyrics --> App
+    App --> UI
+```
+
+Guidelines:
+
+- Keep low-level diagnostics near low-level code. `sd_diskio.c` owns SD command
+  error steps, command numbers, and command responses.
+- Keep storage errors in storage-facing modules. FatFs-facing modules may use
+  or translate `FRESULT`; pure logic modules should not.
+- Keep pure parsing/checking APIs independent from FatFs and HAL. Use `bool` or
+  a parse-specific enum when callers need more detail.
+- Translate errors at module boundaries. For example, `app_tracks.c` can
+  translate `FR_NO_FILESYSTEM` into a track-scan status, and `main.c` can
+  translate that status into a display message.
+- The UI should render messages; it should not parse SPI, FatFs, or HAL error
+  codes directly unless the app explicitly passes a diagnostic string.
+- Use `Error_Handler()` only for unrecoverable initialization failures where the
+  firmware cannot continue safely.
+- Preserve enough diagnostic information to debug hardware failures, but do not
+  leak unrelated low-level details through every module API.
+
+Preferred layering:
+
+```text
+HAL / hardware init failure        -> Error_Handler()
+SD block driver failure            -> DSTATUS / DRESULT + SD diagnostics
+FatFs storage operation failure    -> FRESULT inside storage modules
+Track scanning failure             -> AppTracksStatus
+Lyrics loading failure             -> AppLyricsStatus
+Pure parse/check failure           -> bool or parse-specific enum
+User-facing failure                -> display message selected by app layer
+```
+
+Avoid a global app error enum unless every value is meaningful to every caller.
+Prefer module-specific enums such as:
+
+```c
+typedef enum
+{
+  APP_TRACKS_STATUS_OK,
+  APP_TRACKS_STATUS_INVALID_PARAMETER,
+  APP_TRACKS_STATUS_MOUNT_FAILED,
+  APP_TRACKS_STATUS_OPEN_DIR_FAILED,
+  APP_TRACKS_STATUS_READ_DIR_FAILED,
+  APP_TRACKS_STATUS_NO_TRACKS
+} AppTracksStatus;
+
+typedef enum
+{
+  APP_LYRICS_STATUS_OK,
+  APP_LYRICS_STATUS_INVALID_PARAMETER,
+  APP_LYRICS_STATUS_FILE_NOT_FOUND,
+  APP_LYRICS_STATUS_READ_FAILED,
+  APP_LYRICS_STATUS_NO_TIMED_LINES
+} AppLyricsStatus;
+```
 
 ## Naming Conventions
 
@@ -273,12 +378,12 @@ code should be consistent and searchable.
 - Public application module functions use Pascal-style module prefixes:
   `AppLogic_ParseLyricLine`, `SD_SPI_Setup`, `SSD1306_UpdateScreen`.
 - File-local helper functions use `static` and Pascal-style area prefixes:
-  `Display_ShowTrackBrowser`, `Lyrics_Update`, `ButtonDebounce_Process`.
+  `Display_ShowTrackBrowser`, `Lyrics_Update`, `ButtonInput_ProcessOne`.
 - Generated peripheral init functions keep CubeMX names:
   `MX_GPIO_Init`, `MX_I2C2_Init`, `SystemClock_Config`.
-- Types use PascalCase nouns: `ButtonDebouncer`, `LyricLine`, `AppMode`.
+- Types use PascalCase nouns: `ButtonDebouncer`, `AppLyricLine`, `AppMode`.
 - Enum constants and macros use upper snake case:
-  `APP_MODE_BROWSER`, `BUTTON_ACTION_NEXT`, `MAX_TRACKS`.
+  `APP_MODE_BROWSER`, `BUTTON_INPUT_ACTION_NEXT`, `MAX_TRACKS`.
 - Local variables and struct fields use lower snake case:
   `track_count`, `selected_track`, `timestamp_ms`.
 - Global HAL handles keep CubeMX names:
@@ -322,14 +427,57 @@ code should be consistent and searchable.
 - Prefer deterministic behavior. Avoid hidden global state in pure logic; when
   state is necessary, make initialization and ownership explicit.
 
+## Code Review Guidelines
+
+Review firmware changes for behavior, hardware safety, and maintainability
+before style. Findings should be concrete and tied to file/line references when
+possible.
+
+- Correctness: verify state transitions, boundary conditions, parsing edge
+  cases, wraparound behavior, and error paths.
+- Memory safety: check fixed-buffer writes, null termination, truncation,
+  pointer validity, stack growth, and array bounds.
+- Embedded constraints: watch RAM/FLASH growth, blocking calls, timeout
+  coverage, ISR safety, polling frequency, and assumptions about `HAL_GetTick`.
+- Hardware behavior: confirm GPIO polarity, pull configuration, peripheral
+  instances, chip-select handling, SPI/I2C timing, and active-low signals.
+- Generated code boundaries: ensure CubeMX-owned files are changed only in
+  `USER CODE` sections or with a clear reason. Prefer custom modules for
+  larger logic.
+- Testability: pure behavior should be in `Core/App` and covered by host tests.
+  Hardware-dependent changes should have a clear manual verification note or an
+  adapter seam that can be tested.
+- Build integration: confirm new sources are added to the firmware target and,
+  when applicable, host-test CMake. Verify presets still work.
+- Error handling: confirm failures return useful status, preserve diagnostics,
+  and do not silently leave stale UI or state.
+- API design: keep interfaces narrow, const-correct, unit-explicit, and free of
+  HAL/FatFs details when the module is meant to be pure logic.
+- Regression risk: compare behavior against existing user flows: SD scan,
+  track browser, NEXT/BACK/PLAY, LRC load, lyric timing, display update, and LED
+  state.
+- Vendor code: avoid reviewing broad generated or vendor formatting churn as if
+  it were application logic. Call out unnecessary churn separately.
+
+Before approving a change, run the smallest verification set that covers it:
+
+```sh
+cmake --build --preset UnitTests
+cmake --build --preset Debug
+```
+
+For hardware-facing changes, also document the board-level check performed or
+still needed.
+
 ## Source Ownership Notes
 
 - Treat files under `Core/Src`, `Core/Inc`, `cmake/stm32cubemx`, and
   `mcu_ioc.ioc` as STM32CubeMX-owned unless the change is inside a
   `USER CODE BEGIN` / `USER CODE END` section or the project already has custom
   edits there.
-- `Core/Src/main.c` contains most app behavior: button debounce, track browser,
-  LRC parsing, UTF-8 display helpers, lyric timing, and OLED animation effects.
+- `Core/Input/button_input.c` contains polled button debounce behavior.
+- `Core/Src/main.c` still contains track browser, UTF-8 display helpers, lyric
+  timing, and OLED animation effects.
 - `Core/Src/sd_diskio.c` is the FatFs block-device adapter for read-only SD
   access over SPI2. `disk_write` returns `RES_WRPRT`.
 - `Core/SSD1306` is the local OLED module. Prefer extending this module for
@@ -345,35 +493,36 @@ classDiagram
     class ButtonDebouncer {
         GPIO_TypeDef* port
         uint16_t pin
-        ButtonAction action
+        ButtonInputAction action
         ButtonDebounceState state
         uint32_t state_changed_at
     }
 
-    class LyricLine {
+    class AppLyricLine {
         uint32_t timestamp_ms
         char text[48]
     }
 
     class AppState {
         bool display_ready
-        FRESULT sd_scan_result
+        AppTracksStatus track_scan_status
         char track_names[32][64]
         uint32_t track_count
         uint32_t selected_track
-        LyricLine lyric_lines[48]
+        AppLyricLine lyric_lines[48]
         uint32_t lyric_count
         AppMode app_mode
     }
 
     AppState "1" --> "many" ButtonDebouncer
-    AppState "1" --> "many" LyricLine
+    AppState "1" --> "many" AppLyricLine
 ```
 
 ## Practical Guidance For Future Agents
 
-- Start with `Core/Src/main.c` for feature work; most behavior is currently
-  implemented as file-local static functions.
+- Start with the module that owns the responsibility: `Core/Input` for buttons,
+  `Core/App` for track/lyrics/app rules, `Core/SSD1306` for display primitives,
+  and `Core/Src/main.c` for top-level orchestration and remaining display flow.
 - Keep memory use fixed-size unless there is a strong reason to change it. This
   firmware avoids dynamic allocation in the application path.
 - Be careful with display text lengths: track names are 64 bytes, lyric lines

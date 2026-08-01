@@ -61,13 +61,10 @@ void Error_Handler(void);
 #define LED_D2_GPIO_Port GPIOC
 #define NEXT_Pin GPIO_PIN_0
 #define NEXT_GPIO_Port GPIOA
-#define NEXT_EXTI_IRQn EXTI0_IRQn
 #define PLAY_RESUME_Pin GPIO_PIN_1
 #define PLAY_RESUME_GPIO_Port GPIOA
-#define PLAY_RESUME_EXTI_IRQn EXTI1_IRQn
 #define BACK_Pin GPIO_PIN_2
 #define BACK_GPIO_Port GPIOA
-#define BACK_EXTI_IRQn EXTI2_IRQn
 #define SD_CS_Pin GPIO_PIN_12
 #define SD_CS_GPIO_Port GPIOB
 
