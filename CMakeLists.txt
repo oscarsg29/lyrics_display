@@ -45,6 +45,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
+    Core/App/app_logic.c
     Core/SSD1306/ssd1306.c
     Core/SSD1306/ssd1306_fonts.c
     Core/Src/sd_diskio.c
@@ -55,6 +56,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
+    Core/App
     Core/SSD1306
     Middlewares/Third_Party/FatFs/src
 )
@@ -72,4 +74,14 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
     stm32cubemx
 
     # Add user defined libraries
+)
+
+# Host-side unit tests. These are built with the native compiler in a separate
+# build tree because the main firmware target uses the ARM embedded toolchain.
+add_custom_target(unit_tests
+    COMMAND ${CMAKE_COMMAND} -S ${CMAKE_SOURCE_DIR}/tests -B ${CMAKE_SOURCE_DIR}/build/host-tests
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_SOURCE_DIR}/build/host-tests
+    COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_SOURCE_DIR}/build/host-tests --verbose
+    USES_TERMINAL
+    COMMENT "Configuring, building, and running host unit tests"
 )

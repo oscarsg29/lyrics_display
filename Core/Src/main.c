@@ -28,6 +28,7 @@
 #include "ff.h"
 #include "sd_diskio.h"
 #include "ssd1306.h"
+#include "app_logic.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -145,12 +146,6 @@ static void App_BackTrack(void);
 static void App_PlaySelectedTrack(void);
 static void Lyrics_Update(uint32_t now);
 static FRESULT Lyrics_LoadForSelectedTrack(void);
-static bool Lyrics_ParseLine(const char *line, uint32_t *timestamp_ms, const char **text);
-static bool Lyrics_ParseMetadataLine(const char *line);
-static bool Lyrics_ParseTimestampTag(const char **cursor, uint32_t *timestamp_ms);
-static bool Lyrics_ParseDuration(const char *value, uint32_t *duration_ms);
-static bool Lyrics_SkipInlineTimestampTag(const char **cursor);
-static void CopyDisplayText(char *destination, size_t destination_size, const char *source);
 static uint32_t Utf8_DecodeGlyph(const char **text);
 static size_t Utf8_GlyphLength(const char *text);
 static size_t Utf8_GlyphCount(const char *text);
@@ -183,10 +178,6 @@ static void Display_DrawDottedHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t
 static void Display_DrawShadowHighlight(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t frame);
 static uint8_t Lyric_SelectAnimation(void);
 static void App_SetPlaybackLed(bool is_playing);
-static void BuildLrcFileName(const char *mp3_name, char *lrc_name, size_t lrc_name_size);
-static bool StringEndsWithIgnoreCase(const char *text, const char *suffix);
-static void SortTrackList(void);
-
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -418,7 +409,7 @@ static FRESULT SD_LoadTrackList(void)
       break;
     }
 
-    if (((file_info.fattrib & AM_DIR) == 0U) && StringEndsWithIgnoreCase(file_info.fname, ".mp3"))
+    if (((file_info.fattrib & AM_DIR) == 0U) && AppLogic_StringEndsWithIgnoreCase(file_info.fname, ".mp3"))
     {
       strncpy(track_names[track_count], file_info.fname, TRACK_NAME_LENGTH - 1U);
       track_names[track_count][TRACK_NAME_LENGTH - 1U] = '\0';
@@ -427,7 +418,7 @@ static FRESULT SD_LoadTrackList(void)
   }
 
   f_closedir(&dir);
-  SortTrackList();
+  AppLogic_SortTrackNames(&track_names[0][0], track_count, TRACK_NAME_LENGTH);
   return result;
 }
 
@@ -710,7 +701,7 @@ static FRESULT Lyrics_LoadForSelectedTrack(void)
   lyric_artist[0] = '\0';
   lyric_title[0] = '\0';
   lyric_duration_ms = 0U;
-  BuildLrcFileName(track_names[selected_track], file_name, sizeof(file_name));
+  AppLogic_BuildLrcFileName(track_names[selected_track], file_name, sizeof(file_name));
 
   result = f_open(&file, file_name, FA_READ);
   if (result != FR_OK)
@@ -741,13 +732,13 @@ static FRESULT Lyrics_LoadForSelectedTrack(void)
       uint32_t timestamp_ms;
       const char *text;
 
-      if (Lyrics_ParseMetadataLine(line))
+      if (AppLogic_ParseMetadataLine(line, lyric_artist, sizeof(lyric_artist), lyric_title, sizeof(lyric_title), &lyric_duration_ms))
       {
       }
-      else if (lyric_count < MAX_LYRIC_LINES && Lyrics_ParseLine(line, &timestamp_ms, &text) && text[0] != '\0')
+      else if (lyric_count < MAX_LYRIC_LINES && AppLogic_ParseLyricLine(line, &timestamp_ms, &text) && text[0] != '\0')
       {
         lyric_lines[lyric_count].timestamp_ms = timestamp_ms;
-        CopyDisplayText(lyric_lines[lyric_count].text, sizeof(lyric_lines[lyric_count].text), text);
+        AppLogic_CopyDisplayText(lyric_lines[lyric_count].text, sizeof(lyric_lines[lyric_count].text), text);
         if (lyric_lines[lyric_count].text[0] != '\0')
         {
           lyric_count++;
@@ -760,385 +751,6 @@ static FRESULT Lyrics_LoadForSelectedTrack(void)
 
   f_close(&file);
   return result;
-}
-
-static bool Lyrics_ParseLine(const char *line, uint32_t *timestamp_ms, const char **text)
-{
-  uint32_t ignored_timestamp;
-  uint32_t minutes = 0U;
-  uint32_t seconds = 0U;
-  uint32_t fraction = 0U;
-  uint32_t fraction_digits = 0U;
-  const char *p = line;
-
-  if (p == NULL)
-  {
-    return false;
-  }
-
-  if ((uint8_t)p[0] == 0xEFU && (uint8_t)p[1] == 0xBBU && (uint8_t)p[2] == 0xBFU)
-  {
-    p += 3;
-  }
-
-  if (*p == '"')
-  {
-    p++;
-  }
-
-  if (*p != '[')
-  {
-    return false;
-  }
-
-  p++;
-  while (*p >= '0' && *p <= '9')
-  {
-    minutes = (minutes * 10U) + (uint32_t)(*p - '0');
-    p++;
-  }
-
-  if (*p != ':')
-  {
-    return false;
-  }
-  p++;
-
-  while (*p >= '0' && *p <= '9')
-  {
-    seconds = (seconds * 10U) + (uint32_t)(*p - '0');
-    p++;
-  }
-
-  if (*p == '.')
-  {
-    p++;
-    while (*p >= '0' && *p <= '9' && fraction_digits < 3U)
-    {
-      fraction = (fraction * 10U) + (uint32_t)(*p - '0');
-      fraction_digits++;
-      p++;
-    }
-  }
-
-  if (*p != ']')
-  {
-    return false;
-  }
-  p++;
-
-  while (fraction_digits < 3U)
-  {
-    fraction *= 10U;
-    fraction_digits++;
-  }
-
-  *timestamp_ms = ((minutes * 60U) + seconds) * 1000U + fraction;
-
-  while (Lyrics_ParseTimestampTag(&p, &ignored_timestamp))
-  {
-  }
-
-  while (*p == ' ')
-  {
-    p++;
-  }
-
-  if (*p == '"' && p[1] == '\0')
-  {
-    p++;
-  }
-
-  *text = p;
-  return true;
-}
-
-static bool Lyrics_ParseMetadataLine(const char *line)
-{
-  const char *p = line;
-  const char *value;
-  char *target = NULL;
-  char metadata_text[TRACK_NAME_LENGTH];
-  size_t metadata_length = 0U;
-  bool is_length = false;
-
-  if (p == NULL)
-  {
-    return false;
-  }
-
-  if ((uint8_t)p[0] == 0xEFU && (uint8_t)p[1] == 0xBBU && (uint8_t)p[2] == 0xBFU)
-  {
-    p += 3;
-  }
-
-  if (*p == '"')
-  {
-    p++;
-  }
-
-  if (p[0] != '[')
-  {
-    return false;
-  }
-
-  if (p[1] >= '0' && p[1] <= '9')
-  {
-    return false;
-  }
-
-  if (p[1] == 'a' && p[2] == 'r' && p[3] == ':')
-  {
-    target = lyric_artist;
-  }
-  else if (p[1] == 't' && p[2] == 'i' && p[3] == ':')
-  {
-    target = lyric_title;
-  }
-  else if (strncmp(&p[1], "length", 6U) == 0 && p[7] == ':')
-  {
-    is_length = true;
-    value = &p[8];
-  }
-  else
-  {
-    return true;
-  }
-
-  if (!is_length)
-  {
-    value = &p[4];
-  }
-  while (*value == ' ')
-  {
-    value++;
-  }
-
-  while (value[metadata_length] != '\0' && value[metadata_length] != ']' && metadata_length < (sizeof(metadata_text) - 1U))
-  {
-    metadata_text[metadata_length] = value[metadata_length];
-    metadata_length++;
-  }
-  metadata_text[metadata_length] = '\0';
-
-  if (is_length)
-  {
-    (void)Lyrics_ParseDuration(metadata_text, &lyric_duration_ms);
-  }
-  else
-  {
-    CopyDisplayText(target, TRACK_NAME_LENGTH, metadata_text);
-  }
-  return true;
-}
-
-static bool Lyrics_ParseTimestampTag(const char **cursor, uint32_t *timestamp_ms)
-{
-  uint32_t minutes = 0U;
-  uint32_t seconds = 0U;
-  uint32_t fraction = 0U;
-  uint32_t fraction_digits = 0U;
-  const char *p = *cursor;
-
-  if (p == NULL || *p != '[')
-  {
-    return false;
-  }
-
-  p++;
-  if (*p < '0' || *p > '9')
-  {
-    return false;
-  }
-
-  while (*p >= '0' && *p <= '9')
-  {
-    minutes = (minutes * 10U) + (uint32_t)(*p - '0');
-    p++;
-  }
-
-  if (*p != ':')
-  {
-    return false;
-  }
-  p++;
-
-  if (*p < '0' || *p > '9')
-  {
-    return false;
-  }
-
-  while (*p >= '0' && *p <= '9')
-  {
-    seconds = (seconds * 10U) + (uint32_t)(*p - '0');
-    p++;
-  }
-
-  if (*p == '.')
-  {
-    p++;
-    while (*p >= '0' && *p <= '9' && fraction_digits < 3U)
-    {
-      fraction = (fraction * 10U) + (uint32_t)(*p - '0');
-      fraction_digits++;
-      p++;
-    }
-
-    while (*p >= '0' && *p <= '9')
-    {
-      p++;
-    }
-  }
-
-  if (*p != ']')
-  {
-    return false;
-  }
-  p++;
-
-  while (fraction_digits < 3U)
-  {
-    fraction *= 10U;
-    fraction_digits++;
-  }
-
-  *timestamp_ms = ((minutes * 60U) + seconds) * 1000U + fraction;
-  *cursor = p;
-  return true;
-}
-
-static bool Lyrics_ParseDuration(const char *value, uint32_t *duration_ms)
-{
-  uint32_t minutes = 0U;
-  uint32_t seconds = 0U;
-  const char *p = value;
-
-  if (p == NULL || duration_ms == NULL)
-  {
-    return false;
-  }
-
-  while (*p >= '0' && *p <= '9')
-  {
-    minutes = (minutes * 10U) + (uint32_t)(*p - '0');
-    p++;
-  }
-
-  if (*p != ':')
-  {
-    return false;
-  }
-  p++;
-
-  while (*p >= '0' && *p <= '9')
-  {
-    seconds = (seconds * 10U) + (uint32_t)(*p - '0');
-    p++;
-  }
-
-  *duration_ms = ((minutes * 60U) + seconds) * 1000U;
-  return true;
-}
-
-static bool Lyrics_SkipInlineTimestampTag(const char **cursor)
-{
-  const char *p = *cursor;
-
-  if (p == NULL || *p != '<')
-  {
-    return false;
-  }
-
-  p++;
-  if (*p < '0' || *p > '9')
-  {
-    return false;
-  }
-
-  while (*p >= '0' && *p <= '9')
-  {
-    p++;
-  }
-
-  if (*p != ':')
-  {
-    return false;
-  }
-  p++;
-
-  if (*p < '0' || *p > '9')
-  {
-    return false;
-  }
-
-  while (*p >= '0' && *p <= '9')
-  {
-    p++;
-  }
-
-  if (*p == '.')
-  {
-    p++;
-    while (*p >= '0' && *p <= '9')
-    {
-      p++;
-    }
-  }
-
-  if (*p != '>')
-  {
-    return false;
-  }
-
-  *cursor = p + 1;
-  return true;
-}
-
-static void CopyDisplayText(char *destination, size_t destination_size, const char *source)
-{
-  size_t write_index = 0U;
-
-  if (destination_size == 0U)
-  {
-    return;
-  }
-
-  while (*source != '\0' && write_index < (destination_size - 1U))
-  {
-    uint8_t byte = (uint8_t)*source;
-    size_t glyph_length;
-
-    if (Lyrics_SkipInlineTimestampTag(&source))
-    {
-      continue;
-    }
-
-    if (byte < 0x80U)
-    {
-      destination[write_index++] = (char)byte;
-      source++;
-    }
-    else if ((byte == 0xC2U || byte == 0xC3U) && source[1] != '\0')
-    {
-      glyph_length = Utf8_GlyphLength(source);
-      if ((write_index + glyph_length) >= destination_size)
-      {
-        break;
-      }
-      for (size_t i = 0U; i < glyph_length; i++)
-      {
-        destination[write_index++] = source[i];
-      }
-      source += glyph_length;
-    }
-    else
-    {
-      destination[write_index++] = '?';
-      source++;
-    }
-  }
-
-  destination[write_index] = '\0';
 }
 
 static uint32_t Utf8_DecodeGlyph(const char **text)
@@ -2113,77 +1725,6 @@ static void App_SetPlaybackLed(bool is_playing)
 
   lyric_led_on = is_playing;
   HAL_GPIO_WritePin(LED_D2_GPIO_Port, LED_D2_Pin, is_playing ? LED_PLAYING_STATE : LED_STOPPED_STATE);
-}
-
-static void BuildLrcFileName(const char *mp3_name, char *lrc_name, size_t lrc_name_size)
-{
-  size_t length;
-
-  if (lrc_name_size == 0U)
-  {
-    return;
-  }
-
-  strncpy(lrc_name, mp3_name, lrc_name_size - 1U);
-  lrc_name[lrc_name_size - 1U] = '\0';
-
-  length = strlen(lrc_name);
-  if (length >= 4U && StringEndsWithIgnoreCase(lrc_name, ".mp3"))
-  {
-    lrc_name[length - 4U] = '\0';
-  }
-
-  strncat(lrc_name, ".lrc", lrc_name_size - strlen(lrc_name) - 1U);
-}
-
-static bool StringEndsWithIgnoreCase(const char *text, const char *suffix)
-{
-  size_t text_length = strlen(text);
-  size_t suffix_length = strlen(suffix);
-
-  if (suffix_length > text_length)
-  {
-    return false;
-  }
-
-  text += text_length - suffix_length;
-  for (size_t i = 0U; i < suffix_length; i++)
-  {
-    char a = text[i];
-    char b = suffix[i];
-
-    if (a >= 'A' && a <= 'Z')
-    {
-      a = (char)(a + ('a' - 'A'));
-    }
-    if (b >= 'A' && b <= 'Z')
-    {
-      b = (char)(b + ('a' - 'A'));
-    }
-    if (a != b)
-    {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-static void SortTrackList(void)
-{
-  for (uint32_t i = 0U; i < track_count; i++)
-  {
-    for (uint32_t j = i + 1U; j < track_count; j++)
-    {
-      if (strcmp(track_names[i], track_names[j]) > 0)
-      {
-        char temp[TRACK_NAME_LENGTH];
-        strncpy(temp, track_names[i], sizeof(temp));
-        strncpy(track_names[i], track_names[j], TRACK_NAME_LENGTH);
-        strncpy(track_names[j], temp, TRACK_NAME_LENGTH);
-      }
-    }
-  }
 }
 
 /* USER CODE END 4 */

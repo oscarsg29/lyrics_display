@@ -33,6 +33,13 @@
         {
             "name": "Release",
             "configurePreset": "Release"
+        },
+        {
+            "name": "UnitTests",
+            "configurePreset": "Debug",
+            "targets": [
+                "unit_tests"
+            ]
         }
     ]
 }
