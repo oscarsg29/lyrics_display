@@ -59,8 +59,9 @@ void AppController_Init(AppTimeMs now)
   app_now = now;
   PlaybackLed_Set(false);
   ButtonInput_Init(now);
-  StoragePort_Setup();
   (void)AppDisplay_Init();
+  AppDisplay_ShowBootInfo();
+  StoragePort_Setup();
   AppDisplay_ShowSdScanning();
   track_scan_status = SD_LoadTrackList();
   App_ShowTrackBrowser();

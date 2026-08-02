@@ -34,6 +34,30 @@ enable_language(C ASM)
 # Create an executable object type
 add_executable(${CMAKE_PROJECT_NAME})
 
+find_package(Git QUIET)
+set(PROJECT_GIT_VERSION "unknown")
+if(Git_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse --short=8 HEAD
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE PROJECT_GIT_VERSION
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} status --porcelain
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE PROJECT_GIT_STATUS
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if(PROJECT_GIT_STATUS)
+        string(APPEND PROJECT_GIT_VERSION "-dirty")
+    endif()
+endif()
+
+message("Firmware version: " ${PROJECT_GIT_VERSION} " " ${CMAKE_BUILD_TYPE})
+
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
 
@@ -43,8 +67,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 )
 
 # Add sources to executable
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user sources here
+set(PROJECT_APP_SOURCES
     Core/App/app_controller.c
     Core/App/app_display.c
     Core/App/app_display_effects.c
@@ -58,6 +81,11 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Platform/display_port.c
     Core/Platform/led_port.c
     Core/Platform/storage_port.c
+)
+
+target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+    # Add user sources here
+    ${PROJECT_APP_SOURCES}
     Core/SSD1306/ssd1306.c
     Core/SSD1306/ssd1306_fonts.c
     Core/Src/sd_diskio.c
@@ -78,6 +106,25 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined symbols
+    APP_BUILD_COMMIT="${PROJECT_GIT_VERSION}"
+    APP_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+)
+
+set(PROJECT_WARNING_OPTIONS
+    -Wextra
+    -Wpedantic
+    -Wconversion
+    -Wsign-conversion
+    -Wshadow
+    -Wdouble-promotion
+    -Wformat=2
+    -Wundef
+    -Wstrict-prototypes
+    -Wmissing-prototypes
+)
+
+set_source_files_properties(${PROJECT_APP_SOURCES}
+    PROPERTIES COMPILE_OPTIONS "${PROJECT_WARNING_OPTIONS}"
 )
 
 # Remove wrong libob.a library dependency when using cpp files

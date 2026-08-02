@@ -30,6 +30,7 @@ static void Effects_DrawZigZagHighlight(AppDisplayRect rect, uint8_t frame);
 static void Effects_DrawBandHighlight(AppDisplayRect rect, uint8_t frame);
 static void Effects_DrawDottedHighlight(AppDisplayRect rect, uint8_t frame);
 static void Effects_DrawShadowHighlight(AppDisplayRect rect, uint8_t frame);
+static uint16_t Coordinate_SubtractFloorZero(uint16_t value, uint16_t amount);
 static uint32_t Random_Xorshift32(uint32_t seed);
 
 void AppDisplayEffects_DrawMultiLineAccent(AppDisplayLineSpan span, AppAnimationFrame frame, AppAnimationStyle style)
@@ -211,8 +212,8 @@ static void Effects_DrawLyricParticles(uint8_t frame, uint8_t style)
     speed_y = (uint8_t)(1U + ((seed >> LYRIC_PARTICLE_SPEED_Y_SHIFT) & 1U));
     wobble = (uint8_t)(((frame + (i * 3U)) & 7U) < 4U ? (frame & 3U) : (3U - (frame & 3U)));
 
-    x = (int16_t)((base_x + (frame * speed_x) + (i * 11U)) % SSD1306_WIDTH);
-    y = (int16_t)((base_y + (frame * speed_y) + wobble + (i * 5U)) % SSD1306_HEIGHT);
+    x = (int16_t)(((uint32_t)base_x + ((uint32_t)frame * speed_x) + ((uint32_t)i * 11U)) % SSD1306_WIDTH);
+    y = (int16_t)(((uint32_t)base_y + ((uint32_t)frame * speed_y) + wobble + ((uint32_t)i * 5U)) % SSD1306_HEIGHT);
 
     if ((i % 9U) == 0U)
     {
@@ -391,9 +392,9 @@ static void Effects_DrawBurstHighlight(AppDisplayRect rect, uint8_t frame)
   uint8_t reach = (uint8_t)(2U + (frame & 3U));
 
   SSD1306_DrawRectangle(x, y, w, h, SSD1306_COLOR_WHITE);
-  SSD1306_DrawLine(center_x, y, center_x, (uint16_t)(y > reach ? y - reach : 0U), SSD1306_COLOR_WHITE);
+  SSD1306_DrawLine(center_x, y, center_x, Coordinate_SubtractFloorZero(y, reach), SSD1306_COLOR_WHITE);
   SSD1306_DrawLine(center_x, (uint16_t)(y + h), center_x, (uint16_t)(y + h + reach), SSD1306_COLOR_WHITE);
-  SSD1306_DrawLine(x, center_y, (uint16_t)(x > reach ? x - reach : 0U), center_y, SSD1306_COLOR_WHITE);
+  SSD1306_DrawLine(x, center_y, Coordinate_SubtractFloorZero(x, reach), center_y, SSD1306_COLOR_WHITE);
   SSD1306_DrawLine((uint16_t)(x + w), center_y, (uint16_t)(x + w + reach), center_y, SSD1306_COLOR_WHITE);
   SSD1306_DrawPixel((uint16_t)(center_x > reach ? center_x - reach : center_x), (uint16_t)(center_y > reach ? center_y - reach : center_y), SSD1306_COLOR_WHITE);
   SSD1306_DrawPixel((uint16_t)(center_x + reach), (uint16_t)(center_y > reach ? center_y - reach : center_y), SSD1306_COLOR_WHITE);
@@ -411,8 +412,8 @@ static void Effects_DrawWingHighlight(AppDisplayRect rect, uint8_t frame)
   uint8_t mid_y = (uint8_t)(y + (h / 2U));
 
   SSD1306_DrawFilledRectangle(x, y, w, h, SSD1306_COLOR_WHITE);
-  SSD1306_DrawLine((uint16_t)(x > wing ? x - wing : 0U), mid_y, x, y, SSD1306_COLOR_WHITE);
-  SSD1306_DrawLine((uint16_t)(x > wing ? x - wing : 0U), mid_y, x, (uint16_t)(y + h), SSD1306_COLOR_WHITE);
+  SSD1306_DrawLine(Coordinate_SubtractFloorZero(x, wing), mid_y, x, y, SSD1306_COLOR_WHITE);
+  SSD1306_DrawLine(Coordinate_SubtractFloorZero(x, wing), mid_y, x, (uint16_t)(y + h), SSD1306_COLOR_WHITE);
   SSD1306_DrawLine((uint16_t)(x + w), y, (uint16_t)(x + w + wing), mid_y, SSD1306_COLOR_WHITE);
   SSD1306_DrawLine((uint16_t)(x + w), (uint16_t)(y + h), (uint16_t)(x + w + wing), mid_y, SSD1306_COLOR_WHITE);
 }
@@ -445,12 +446,12 @@ static void Effects_DrawSparkHighlight(AppDisplayRect rect, uint8_t frame)
 
   SSD1306_DrawRectangle(x, y, w, h, SSD1306_COLOR_WHITE);
   SSD1306_DrawPixel((uint16_t)(x + sparkle), (uint16_t)(y > 1U ? y - 1U : y), SSD1306_COLOR_WHITE);
-  SSD1306_DrawPixel((uint16_t)(x + w - sparkle), (uint16_t)(y > 1U ? y - 1U : y), SSD1306_COLOR_WHITE);
+  SSD1306_DrawPixel(Coordinate_SubtractFloorZero((uint16_t)(x + w), sparkle), Coordinate_SubtractFloorZero(y, 1U), SSD1306_COLOR_WHITE);
   SSD1306_DrawPixel((uint16_t)(x + sparkle), (uint16_t)(y + h + 1U), SSD1306_COLOR_WHITE);
-  SSD1306_DrawPixel((uint16_t)(x + w - sparkle), (uint16_t)(y + h + 1U), SSD1306_COLOR_WHITE);
+  SSD1306_DrawPixel(Coordinate_SubtractFloorZero((uint16_t)(x + w), sparkle), (uint16_t)(y + h + 1U), SSD1306_COLOR_WHITE);
   SSD1306_DrawPixel((uint16_t)(x + sparkle + 1U), y, SSD1306_COLOR_WHITE);
-  SSD1306_DrawPixel((uint16_t)(x + w - sparkle - 1U), (uint16_t)(y + h), SSD1306_COLOR_WHITE);
-  SSD1306_DrawPixel((uint16_t)(x > sparkle ? x - sparkle : x), (uint16_t)(y + (h / 2U)), SSD1306_COLOR_WHITE);
+  SSD1306_DrawPixel(Coordinate_SubtractFloorZero((uint16_t)(x + w), (uint16_t)(sparkle + 1U)), (uint16_t)(y + h), SSD1306_COLOR_WHITE);
+  SSD1306_DrawPixel(Coordinate_SubtractFloorZero(x, sparkle), (uint16_t)(y + (h / 2U)), SSD1306_COLOR_WHITE);
   SSD1306_DrawPixel((uint16_t)(x + w + sparkle), (uint16_t)(y + (h / 2U)), SSD1306_COLOR_WHITE);
 }
 
@@ -548,4 +549,9 @@ static uint32_t Random_Xorshift32(uint32_t seed)
   seed ^= seed << RANDOM_XORSHIFT_LEFT_C;
 
   return seed;
+}
+
+static uint16_t Coordinate_SubtractFloorZero(uint16_t value, uint16_t amount)
+{
+  return (value > amount) ? (uint16_t)(value - amount) : 0U;
 }

@@ -11,6 +11,14 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifndef APP_BUILD_COMMIT
+#define APP_BUILD_COMMIT "unknown"
+#endif
+
+#ifndef APP_BUILD_TYPE
+#define APP_BUILD_TYPE "unknown"
+#endif
+
 #define DISPLAY_CHARS_PER_LINE 18U
 #define DISPLAY_ROW_BUFFER_LENGTH 56U
 #define DISPLAY_MAX_ROWS 3U
@@ -20,11 +28,12 @@
 #define DISPLAY_CENTER_ONE_LINE_Y 16U
 #define DISPLAY_CENTER_TWO_LINE0_Y 10U
 #define DISPLAY_CENTER_TWO_LINE1_Y 21U
-#define DISPLAY_CENTER_THREE_LINE0_Y 4U
-#define DISPLAY_CENTER_THREE_LINE1_Y 14U
-#define DISPLAY_CENTER_THREE_LINE2_Y 23U
+#define DISPLAY_CENTER_THREE_LINE0_Y 1U
+#define DISPLAY_CENTER_THREE_LINE1_Y 11U
+#define DISPLAY_CENTER_THREE_LINE2_Y 21U
 #define DISPLAY_LARGE_FONT_MARGIN_X 8U
 #define DISPLAY_SHAKE_PATTERN_MASK 7U
+#define DISPLAY_BOOT_INFO_HOLD_MS 1500U
 #define LYRIC_STYLE_TREMOR 1U
 #define LYRIC_STYLE_BURST 3U
 #define LYRIC_STYLE_STRIPE 4U
@@ -53,6 +62,17 @@ bool AppDisplay_Init(void)
 {
   display_ready = DisplayPort_Init();
   return display_ready;
+}
+
+void AppDisplay_ShowBootInfo(void)
+{
+  if (!display_ready)
+  {
+    return;
+  }
+
+  AppDisplay_ShowMessage("Lyrics", APP_BUILD_COMMIT, APP_BUILD_TYPE);
+  DisplayPort_DelayMs(DISPLAY_BOOT_INFO_HOLD_MS);
 }
 
 void AppDisplay_ShowSdScanning(void)
@@ -184,7 +204,7 @@ static void Display_PrintLineOffset(uint8_t y, const char *text, int8_t offset_x
   }
 
   text_width = (uint16_t)(visible_glyphs * SSD1306_Font_7x10.FontWidth);
-  shifted_x = (int16_t)(((SSD1306_WIDTH - text_width) / 2U) + offset_x);
+  shifted_x = (int16_t)((int16_t)((SSD1306_WIDTH - text_width) / 2U) + (int16_t)offset_x);
   shifted_y = (int16_t)(y + offset_y);
 
   if (shifted_x < 0)

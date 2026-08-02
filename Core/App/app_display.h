@@ -15,6 +15,7 @@ typedef struct
 } AppTrackBrowserView;
 
 bool AppDisplay_Init(void);
+void AppDisplay_ShowBootInfo(void);
 void AppDisplay_ShowSdScanning(void);
 void AppDisplay_ShowTrackBrowser(const AppTrackBrowserView *view);
 void AppDisplay_ShowMessage(const char *line0, const char *line1, const char *line2);
