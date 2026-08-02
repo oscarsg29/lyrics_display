@@ -26,6 +26,8 @@
 
 #pragma once
 
+#include <stdint.h>
+
 /* C++ detection */
 #ifdef __cplusplus
 extern "C" {
@@ -33,7 +35,6 @@ extern "C" {
 #include <stdbool.h>
 #endif
 
-#include "stm32f1xx_hal.h"
 #include "ssd1306_fonts.h"
 
 #include "stdlib.h"
@@ -96,12 +97,11 @@ typedef enum {
 
 /**
  * @brief  Initializes SSD1306 LCD
- * @param  handle: I2C Handle
  * @retval Initialization status:
  *           - false: LCD was not detected on I2C port
  *           - true: LCD initialized OK and ready to use
  */
-bool SSD1306_Init(I2C_HandleTypeDef *handle);
+bool SSD1306_Init(void);
 
 /**
  * @brief  Updates buffer from internal RAM to LCD

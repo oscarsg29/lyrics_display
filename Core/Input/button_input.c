@@ -1,6 +1,8 @@
 #include "button_input.h"
 
-#include "main.h"
+#include "button_port.h"
+
+#include <stddef.h>
 
 #define BUTTON_DEBOUNCE_MS 20U
 
@@ -14,36 +16,32 @@ typedef enum
 
 typedef struct
 {
-  GPIO_TypeDef *port;
-  uint16_t pin;
   ButtonInputAction action;
   ButtonDebounceState state;
-  uint32_t state_changed_at;
+  AppTimeMs state_changed_at;
 } ButtonDebouncer;
 
 static ButtonDebouncer buttons[] =
 {
-  {NEXT_GPIO_Port, NEXT_Pin, BUTTON_INPUT_ACTION_NEXT, BUTTON_RELEASED, 0U},
-  {PLAY_RESUME_GPIO_Port, PLAY_RESUME_Pin, BUTTON_INPUT_ACTION_PLAY, BUTTON_RELEASED, 0U},
-  {BACK_GPIO_Port, BACK_Pin, BUTTON_INPUT_ACTION_BACK, BUTTON_RELEASED, 0U},
+  {BUTTON_INPUT_ACTION_NEXT, BUTTON_RELEASED, {0U}},
+  {BUTTON_INPUT_ACTION_PLAY, BUTTON_RELEASED, {0U}},
+  {BUTTON_INPUT_ACTION_BACK, BUTTON_RELEASED, {0U}},
 };
 
-static void ButtonInput_ProcessOne(ButtonDebouncer *button, uint32_t now, ButtonInputHandler handler);
+static void ButtonInput_ProcessOne(ButtonDebouncer *button, AppTimeMs now, ButtonInputHandler handler);
 
-void ButtonInput_Init(void)
+void ButtonInput_Init(AppTimeMs now)
 {
-  uint32_t now = HAL_GetTick();
-
   for (uint32_t i = 0U; i < (sizeof(buttons) / sizeof(buttons[0])); i++)
   {
-    buttons[i].state = (HAL_GPIO_ReadPin(buttons[i].port, buttons[i].pin) == GPIO_PIN_SET)
+    buttons[i].state = ButtonPort_IsPressed(buttons[i].action)
                      ? BUTTON_PRESSED
                      : BUTTON_RELEASED;
     buttons[i].state_changed_at = now;
   }
 }
 
-void ButtonInput_Process(uint32_t now, ButtonInputHandler handler)
+void ButtonInput_Process(AppTimeMs now, ButtonInputHandler handler)
 {
   for (uint32_t i = 0U; i < (sizeof(buttons) / sizeof(buttons[0])); i++)
   {
@@ -51,14 +49,14 @@ void ButtonInput_Process(uint32_t now, ButtonInputHandler handler)
   }
 }
 
-static void ButtonInput_ProcessOne(ButtonDebouncer *button, uint32_t now, ButtonInputHandler handler)
+static void ButtonInput_ProcessOne(ButtonDebouncer *button, AppTimeMs now, ButtonInputHandler handler)
 {
-  GPIO_PinState sample = HAL_GPIO_ReadPin(button->port, button->pin);
+  bool is_pressed = ButtonPort_IsPressed(button->action);
 
   switch (button->state)
   {
     case BUTTON_RELEASED:
-      if (sample == GPIO_PIN_SET)
+      if (is_pressed)
       {
         button->state = BUTTON_PRESS_DEBOUNCE;
         button->state_changed_at = now;
@@ -66,11 +64,11 @@ static void ButtonInput_ProcessOne(ButtonDebouncer *button, uint32_t now, Button
       break;
 
     case BUTTON_PRESS_DEBOUNCE:
-      if (sample == GPIO_PIN_RESET)
+      if (!is_pressed)
       {
         button->state = BUTTON_RELEASED;
       }
-      else if ((now - button->state_changed_at) >= BUTTON_DEBOUNCE_MS)
+      else if ((now.value - button->state_changed_at.value) >= BUTTON_DEBOUNCE_MS)
       {
         button->state = BUTTON_PRESSED;
         if (handler != NULL)
@@ -81,7 +79,7 @@ static void ButtonInput_ProcessOne(ButtonDebouncer *button, uint32_t now, Button
       break;
 
     case BUTTON_PRESSED:
-      if (sample == GPIO_PIN_RESET)
+      if (!is_pressed)
       {
         button->state = BUTTON_RELEASE_DEBOUNCE;
         button->state_changed_at = now;
@@ -89,11 +87,11 @@ static void ButtonInput_ProcessOne(ButtonDebouncer *button, uint32_t now, Button
       break;
 
     case BUTTON_RELEASE_DEBOUNCE:
-      if (sample == GPIO_PIN_SET)
+      if (is_pressed)
       {
         button->state = BUTTON_PRESSED;
       }
-      else if ((now - button->state_changed_at) >= BUTTON_DEBOUNCE_MS)
+      else if ((now.value - button->state_changed_at.value) >= BUTTON_DEBOUNCE_MS)
       {
         button->state = BUTTON_RELEASED;
       }

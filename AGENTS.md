@@ -19,8 +19,11 @@ flowchart TD
     Root --> Startup["startup_stm32f103xb.s"]
     Root --> TestData["testLrc/"]
 
-    Core --> Src["Core/Src<br/>application + generated init"]
+    Core --> Src["Core/Src<br/>generated init + orchestration"]
     Core --> Inc["Core/Inc<br/>generated headers"]
+    Core --> App["Core/App<br/>application logic, UI state, display composition"]
+    Core --> Input["Core/Input<br/>button debounce"]
+    Core --> Platform["Core/Platform<br/>HAL-facing adapters"]
     Core --> OLED["Core/SSD1306<br/>OLED driver + fonts"]
 
     Drivers --> HAL["STM32F1xx_HAL_Driver"]
@@ -36,7 +39,14 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    Main["Core/Src/main.c<br/>application state machine"]
+    Main["Core/Src/main.c<br/>startup + orchestrator"]
+    AppController["Core/App/app_controller.c<br/>app flow + lyric timing"]
+    AppDisplay["Core/App/app_display.c<br/>screen composition + text layout"]
+    AppEffects["Core/App/app_display_effects.c<br/>lyric visual effects"]
+    AppLogic["Core/App/app_logic.c<br/>pure parsing/sorting/text rules"]
+    AppTypes["Core/App/app_types.h<br/>strong domain types"]
+    ButtonInput["Core/Input/button_input.c<br/>polling debounce state"]
+    Platform["Core/Platform/*_port.c<br/>HAL adapters"]
     GPIO["Core/Src/gpio.c<br/>buttons, LED, SD CS"]
     I2C["Core/Src/i2c.c<br/>I2C2 on PB10/PB11"]
     SPI["Core/Src/spi.c<br/>SPI2 on PB13/PB14/PB15"]
@@ -46,18 +56,28 @@ flowchart LR
     OLED["Core/SSD1306<br/>SSD1306 drawing primitives"]
     HAL["Drivers/STM32F1xx_HAL_Driver"]
 
+    Main --> AppController
+    AppController --> AppDisplay
+    AppController --> AppLogic
+    AppController --> ButtonInput
+    AppController --> Platform
+    AppDisplay --> AppEffects
+    AppDisplay --> AppTypes
+    AppEffects --> AppTypes
+    ButtonInput --> Platform
+
     Main --> GPIO
     Main --> I2C
     Main --> SPI
     Main --> TIM
-    Main --> SD
-    Main --> FatFs
-    Main --> OLED
 
     SD --> SPI
     SD --> GPIO
     FatFs --> SD
     OLED --> I2C
+    Platform --> SD
+    Platform --> OLED
+    Platform --> GPIO
 
     GPIO --> HAL
     I2C --> HAL
@@ -65,7 +85,13 @@ flowchart LR
     TIM --> HAL
     SD --> HAL
     OLED --> HAL
+    Platform --> HAL
 ```
+
+HAL dependencies are intentionally limited to `Core/Src`, `Core/Platform`, and
+low-level drivers such as `Core/SSD1306` and `Core/Src/sd_diskio.c`.
+High-level `Core/App` and `Core/Input` modules should not include HAL headers,
+own HAL handles, or call `HAL_*` APIs directly.
 
 ## Firmware Runtime
 
@@ -75,14 +101,15 @@ flowchart TD
     HALInit["HAL_Init"]
     Clock["SystemClock_Config"]
     Peripherals["MX_GPIO_Init<br/>MX_I2C2_Init<br/>MX_SPI2_Init<br/>MX_TIM2_Init"]
-    AppInit["App init<br/>LED stopped<br/>button debounce init<br/>SD_SPI_Setup<br/>SSD1306_Init"]
-    Scan["Display scanning message<br/>SD_LoadTrackList"]
-    Browser["Display_ShowTrackBrowser"]
+    AppInit["AppController_Init(AppTimeMs)<br/>LED stopped<br/>button debounce init<br/>storage setup<br/>display init"]
+    OLEDInit["SSD1306_Init<br/>power-on delay + I2C ready retries"]
+    Scan["Display scanning message<br/>AppTracks_LoadFromRoot"]
+    Browser["AppDisplay_ShowTrackBrowser"]
     Loop["while (1)"]
     Buttons["ButtonInput_Process<br/>NEXT / PLAY / BACK"]
     Lyrics["Lyrics_Update"]
 
-    Reset --> HALInit --> Clock --> Peripherals --> AppInit --> Scan --> Browser --> Loop
+    Reset --> HALInit --> Clock --> Peripherals --> AppInit --> OLEDInit --> Scan --> Browser --> Loop
     Loop --> Buttons --> Loop
     Loop --> Lyrics --> Loop
 ```
@@ -126,24 +153,28 @@ flowchart LR
 
 ```mermaid
 sequenceDiagram
-    participant App as main.c
+    participant Main as main.c
+    participant App as app_controller.c
     participant FatFs as FatFs ff.c
     participant Disk as sd_diskio.c
     participant SPI as SPI2 HAL
     participant Card as SD card
-    participant Display as SSD1306
+    participant Display as app_display.c
+    participant OLED as SSD1306
 
-    App->>Display: Display_ShowSdScanning()
+    Main->>App: AppController_Init(AppTimeMs)
+    App->>Display: AppDisplay_ShowSdScanning()
     App->>FatFs: f_mount()
     FatFs->>Disk: disk_initialize(0)
     Disk->>SPI: SD command exchange
     SPI->>Card: CMD0/CMD8/ACMD41/CMD58
     App->>FatFs: f_opendir("/") + f_readdir()
     App->>App: keep .mp3 names and sort
-    App->>Display: Display_ShowTrackBrowser()
+    App->>Display: AppDisplay_ShowTrackBrowser(AppTrackBrowserView)
     App->>FatFs: f_open(matching .lrc)
     App->>App: parse metadata and timestamped lines
-    App->>Display: render lyric text + animation
+    App->>Display: render lyric text via AppLyricRenderView
+    Display->>OLED: SSD1306 drawing + UpdateScreen
 ```
 
 ## Display Pipeline
@@ -151,14 +182,15 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     Text["Track or lyric text"]
+    View["Typed display views<br/>AppTrackBrowserView<br/>AppLyricRenderView"]
     UTF8["UTF-8 glyph helpers<br/>Utf8_DecodeGlyph<br/>Utf8_GlyphLength<br/>Utf8_GlyphCount"]
     Layout["Layout helpers<br/>CopyDisplayText<br/>Display_PrintWrappedText<br/>Display_PrintCenteredRows"]
-    Effects["Lyric effects<br/>animated highlights<br/>particles<br/>background styles"]
+    Effects["Lyric effects<br/>AppAnimationFrame<br/>AppAnimationStyle<br/>AppDisplayRect"]
     Primitive["SSD1306 primitives<br/>pixels, lines, rectangles, circles, text"]
     Buffer["OLED screen buffer"]
     I2CFlush["SSD1306_UpdateScreen over I2C2"]
 
-    Text --> UTF8 --> Layout --> Effects --> Primitive --> Buffer --> I2CFlush
+    Text --> View --> UTF8 --> Layout --> Effects --> Primitive --> Buffer --> I2CFlush
 ```
 
 ## Build Graph
@@ -170,7 +202,7 @@ flowchart TD
     RootCMake["root CMakeLists.txt<br/>target: mcu_ioc"]
     CubeCMake["cmake/stm32cubemx/CMakeLists.txt"]
     AppSources["Core/Src/*.c<br/>startup_stm32f103xb.s"]
-    UserSources["Core/SSD1306/*.c<br/>sd_diskio.c<br/>FatFs ff.c/ffunicode.c"]
+    UserSources["Core/App/*.c<br/>Core/Input/*.c<br/>Core/Platform/*.c<br/>Core/SSD1306/*.c<br/>sd_diskio.c<br/>FatFs ff.c/ffunicode.c"]
     DriverObj["STM32_Drivers OBJECT library"]
     Elf["mcu_ioc.elf"]
 
@@ -245,6 +277,10 @@ firmware with clear hardware boundaries, not object-oriented ceremony.
 - Dependency Inversion Principle: high-level rules should depend on small,
   stable abstractions or plain data. Hardware modules should adapt GPIO, SPI,
   I2C, FatFs, and display drivers to those rules, not the other way around.
+- Strong domain types: wrap values that have module-boundary meaning, such as
+  `AppTimeMs`, `AppAnimationFrame`, `AppAnimationStyle`, and grouped geometry
+  like `AppDisplayRect`. Prefer request/view structs such as
+  `AppLyricRenderView` over long parameter lists of raw numbers.
 
 Other useful principles for this project:
 
@@ -268,6 +304,9 @@ Other useful principles for this project:
   should normally represent one module or one closely related responsibility.
   Split files when they mix hardware access, app state transitions, parsing,
   storage, rendering, animation, and input handling.
+- Hardware isolation: high-level app and input code should depend on project
+  ports (`Core/Platform`) and domain types, not directly on HAL handles,
+  generated pin macros, or `HAL_*` calls.
 
 ## File Size And Modularity
 
@@ -287,6 +326,20 @@ Other useful principles for this project:
   change, not by generic utility labels.
 - Keep `main.c` focused on startup, peripheral initialization, and top-level
   orchestration.
+
+Current application ownership:
+
+- `Core/Src/main.c` owns HAL startup, CubeMX peripheral init, and passing
+  `AppTimeMs` ticks into the app controller.
+- `Core/App/app_controller.c` owns app state transitions, track selection,
+  lyric timing, and display view construction.
+- `Core/App/app_display.c` owns OLED screen composition and text layout.
+- `Core/App/app_display_effects.c` owns lyric animation backgrounds and
+  highlights.
+- `Core/Input/button_input.c` owns polling debounce behavior but reads button
+  state through `Core/Platform/button_port.c`.
+- `Core/Platform` owns HAL-facing adapters for buttons, LED, display startup,
+  and storage diagnostics/setup.
 
 ## Error Handling Design
 
@@ -376,9 +429,10 @@ Use the existing STM32CubeMX/HAL style where it already exists. New application
 code should be consistent and searchable.
 
 - Public application module functions use Pascal-style module prefixes:
-  `AppLogic_ParseLyricLine`, `SD_SPI_Setup`, `SSD1306_UpdateScreen`.
+  `AppLogic_ParseLyricLine`, `AppDisplay_ShowTrackBrowser`,
+  `SSD1306_UpdateScreen`.
 - File-local helper functions use `static` and Pascal-style area prefixes:
-  `Display_ShowTrackBrowser`, `Lyrics_Update`, `ButtonInput_ProcessOne`.
+  `Display_PrintWrappedText`, `Lyrics_Update`, `ButtonInput_ProcessOne`.
 - Generated peripheral init functions keep CubeMX names:
   `MX_GPIO_Init`, `MX_I2C2_Init`, `SystemClock_Config`.
 - Types use PascalCase nouns: `ButtonDebouncer`, `AppLyricLine`, `AppMode`.
@@ -410,10 +464,25 @@ code should be consistent and searchable.
   when handling strings.
 - Prefer `uint32_t`, `uint16_t`, `uint8_t`, and `size_t` over plain `int` where
   width, storage, or indexing matters.
+- Use wrapper structs for scalar values that cross module boundaries and are
+  easy to confuse. Current examples include `AppTimeMs`, `AppAnimationFrame`,
+  and `AppAnimationStyle`.
+- Group related numbers into domain structs instead of passing long numeric
+  lists. Use `AppDisplayPoint`, `AppDisplaySize`, and `AppDisplayRect` for
+  geometry, and request/view structs for display calls.
+- Do not wrap every local math variable. Raw `uint8_t x`, `uint8_t width`, or
+  loop counters are acceptable inside small, low-level drawing helpers where
+  the scope is obvious.
+- Avoid separate one-field wrappers for every coordinate component unless a
+  real bug class justifies the boilerplate. Prefer `AppDisplaySize` over
+  distinct `AppWidth` and `AppHeight` types in this firmware.
 - Return status codes or `bool` for recoverable failures. Reserve
   `Error_Handler()` for unrecoverable initialization failures.
 - Keep blocking waits bounded with timeouts. Avoid adding unbounded loops around
   peripheral or storage operations.
+- Cold-start hardware timing must be explicit and bounded. OLED initialization
+  waits before the first I2C readiness probe and retries for late power-up
+  modules; do not replace this with an unbounded wait.
 - Use `const` for read-only pointers and table data.
 - Keep module APIs narrow. Expose behavior, not internal buffers, HAL handles,
   or implementation-specific state unless necessary.
@@ -453,6 +522,9 @@ possible.
   and do not silently leave stale UI or state.
 - API design: keep interfaces narrow, const-correct, unit-explicit, and free of
   HAL/FatFs details when the module is meant to be pure logic.
+- Strong typing: check that module-boundary scalar values use the appropriate
+  wrapper or grouped request struct, and that wrappers are not expanded into
+  excessive one-field types for local implementation details.
 - Regression risk: compare behavior against existing user flows: SD scan,
   track browser, NEXT/BACK/PLAY, LRC load, lyric timing, display update, and LED
   state.
@@ -475,14 +547,22 @@ still needed.
   `mcu_ioc.ioc` as STM32CubeMX-owned unless the change is inside a
   `USER CODE BEGIN` / `USER CODE END` section or the project already has custom
   edits there.
-- `Core/Input/button_input.c` contains polled button debounce behavior.
-- `Core/Src/main.c` still contains track browser, UTF-8 display helpers, lyric
-  timing, and OLED animation effects.
+- `Core/Src/main.c` should remain a startup/orchestration file. Do not move app
+  state, display layout, input debounce, or storage logic back into it.
+- `Core/Input/button_input.c` contains polled button debounce behavior and uses
+  `Core/Platform/button_port.c` for hardware reads.
+- `Core/App/app_controller.c` owns track browser state, selected track changes,
+  lyric playback timing, and construction of typed display views.
+- `Core/App/app_display.c` owns screen composition, text wrapping, UTF-8 glyph
+  rendering, and forwarding lyric effects to `app_display_effects.c`.
+- `Core/App/app_display_effects.c` owns animation backgrounds and highlights.
+- `Core/App/app_types.h` owns small domain wrappers and grouped geometry types.
+- `Core/Platform` is the HAL boundary for app-facing hardware adapters.
 - `Core/Src/sd_diskio.c` is the FatFs block-device adapter for read-only SD
   access over SPI2. `disk_write` returns `RES_WRPRT`.
 - `Core/SSD1306` is the local OLED module. Prefer extending this module for
-  reusable drawing primitives; keep app-specific layout and lyric behavior in
-  `main.c` unless it becomes shared.
+  reusable drawing primitives and bounded OLED startup behavior; keep
+  app-specific layout in `Core/App/app_display.c`.
 - `Drivers` and `Middlewares` are vendor code. Avoid broad formatting or
   mechanical edits there.
 
@@ -491,11 +571,26 @@ still needed.
 ```mermaid
 classDiagram
     class ButtonDebouncer {
-        GPIO_TypeDef* port
-        uint16_t pin
         ButtonInputAction action
         ButtonDebounceState state
-        uint32_t state_changed_at
+        AppTimeMs state_changed_at
+    }
+
+    class AppTimeMs {
+        uint32_t value
+    }
+
+    class AppAnimationFrame {
+        uint8_t value
+    }
+
+    class AppAnimationStyle {
+        uint8_t value
+    }
+
+    class AppDisplayRect {
+        AppDisplayPoint origin
+        AppDisplaySize size
     }
 
     class AppLyricLine {
@@ -504,13 +599,14 @@ classDiagram
     }
 
     class AppState {
-        bool display_ready
         AppTracksStatus track_scan_status
         char track_names[32][64]
         uint32_t track_count
         uint32_t selected_track
         AppLyricLine lyric_lines[48]
-        uint32_t lyric_count
+        AppTimeMs lyric_started_at
+        AppAnimationFrame lyric_animation_frame
+        AppAnimationStyle lyric_animation_style
         AppMode app_mode
     }
 
@@ -521,8 +617,9 @@ classDiagram
 ## Practical Guidance For Future Agents
 
 - Start with the module that owns the responsibility: `Core/Input` for buttons,
-  `Core/App` for track/lyrics/app rules, `Core/SSD1306` for display primitives,
-  and `Core/Src/main.c` for top-level orchestration and remaining display flow.
+  `Core/App` for track/lyrics/app rules and display composition,
+  `Core/Platform` for HAL-facing adapters, `Core/SSD1306` for display
+  primitives, and `Core/Src/main.c` for startup orchestration only.
 - Keep memory use fixed-size unless there is a strong reason to change it. This
   firmware avoids dynamic allocation in the application path.
 - Be careful with display text lengths: track names are 64 bytes, lyric lines

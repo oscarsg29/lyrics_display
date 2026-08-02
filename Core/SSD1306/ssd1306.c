@@ -26,6 +26,8 @@
 
 #include "ssd1306.h"
 
+#include "i2c.h"
+
 /* Private functions */
 static void I2C_Write(uint8_t address, uint8_t reg, uint8_t data, uint32_t timeout);
 static void I2C_WriteMulti(uint8_t address, uint8_t reg, uint8_t* data, uint16_t size, uint32_t timeout);
@@ -36,6 +38,11 @@ static void I2C_WriteMulti(uint8_t address, uint8_t reg, uint8_t* data, uint16_t
 #define SSD1306_WRITEDATA(data)            I2C_Write(SSD1306_I2C_ADDR_SHIFTED, 0x40, (data), SSD1306_I2C_WRITE_TIMEOUT)
 /* Absolute value */
 #define ABS(x)                             ((x) > 0 ? (x) : -(x))
+#define SSD1306_POWER_ON_DELAY_MS          200U
+#define SSD1306_READY_RETRY_COUNT          8U
+#define SSD1306_READY_RETRY_DELAY_MS       50U
+#define SSD1306_READY_TRIALS               2U
+#define SSD1306_READY_TIMEOUT_MS           10U
 
 /* SSD1306 data buffer */
 static uint8_t SSD1306_Buffer[SSD1306_WIDTH * SSD1306_HEIGHT / 8];
@@ -52,14 +59,23 @@ typedef struct {
 static I2C_HandleTypeDef *i2cHandle = NULL;
 static SSD1306_t SSD1306 = { 0 };
 
-bool SSD1306_Init(I2C_HandleTypeDef *handle) {
-    /* Check if LCD connected to I2C */
-    if (HAL_I2C_IsDeviceReady(handle, SSD1306_I2C_ADDR_SHIFTED, 2, 5) != HAL_OK) {
-        return false;
-    }
+bool SSD1306_Init(void) {
+    i2cHandle = &hi2c2;
 
-    /* Store i2c handle */
-    i2cHandle = handle;
+    HAL_Delay(SSD1306_POWER_ON_DELAY_MS);
+
+    /* Check if LCD connected to I2C. Some OLED modules answer late after a cold power-up. */
+    for (uint8_t attempt = 0U; attempt < SSD1306_READY_RETRY_COUNT; attempt++) {
+        if (HAL_I2C_IsDeviceReady(i2cHandle, SSD1306_I2C_ADDR_SHIFTED, SSD1306_READY_TRIALS, SSD1306_READY_TIMEOUT_MS) == HAL_OK) {
+            break;
+        }
+
+        if (attempt == (SSD1306_READY_RETRY_COUNT - 1U)) {
+            return false;
+        }
+
+        HAL_Delay(SSD1306_READY_RETRY_DELAY_MS);
+    }
 
     /* A little delay */
     HAL_Delay(100);

@@ -45,12 +45,19 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
+    Core/App/app_controller.c
+    Core/App/app_display.c
+    Core/App/app_display_effects.c
     Core/App/app_lyrics.c
     Core/App/app_logic.c
     Core/App/app_text.c
     Core/App/app_tracks.c
     Core/App/playback_led.c
     Core/Input/button_input.c
+    Core/Platform/button_port.c
+    Core/Platform/display_port.c
+    Core/Platform/led_port.c
+    Core/Platform/storage_port.c
     Core/SSD1306/ssd1306.c
     Core/SSD1306/ssd1306_fonts.c
     Core/Src/sd_diskio.c
@@ -63,6 +70,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
     Core/App
     Core/Input
+    Core/Platform
     Core/SSD1306
     Middlewares/Third_Party/FatFs/src
 )
